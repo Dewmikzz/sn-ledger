@@ -414,9 +414,8 @@ function Login({mode,settings,hasIdentity,onUnlock,onDemo,onEnroll}:{mode:Mode;s
    </div>
 
    <div className="login-dev-footer">
-    <div><b>System Develop By : Dewmika Anusara</b></div>
-    <div><a href="https://www.dew.pshycolab.com" target="_blank" rel="noreferrer">www.dew.pshycolab.com</a> | Contact : 0765496411</div>
-    <div style={{marginTop:'4px',fontSize:'0.7rem',color:'#76877e'}}>Authorized Distribution System · Lakmee Export Lanka PVT LTD</div>
+    <div><strong>System Developed By : Dewmika Anusara</strong></div>
+    <div><strong><a href="https://www.dew.pshycolab.com/" target="_blank" rel="noreferrer">www.dew.pshycolab.com</a></strong> | Contact : 0763107113</div>
    </div>
   </div>
  </div>;
