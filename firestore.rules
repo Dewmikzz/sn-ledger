@@ -1,0 +1,217 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // DATA MODEL — Standard Firestore, integer LKR minor units.
+    // agencies/{agency}: owner-created metadata, readable by enrolled devices.
+    // devices/{uid}: {active:bool,label:string,createdAt:timestamp,revokedAt?:timestamp};
+    //   server/Admin SDK only. Each UID identifies a physical enrolled device.
+    // events/{id}: immutable domain event + authUid:string, serverSequence:int,
+    //   disposition:'applied'|'conflict', conflictReason?:string. operatorId is a
+    //   local PIN-selected operator, NOT a separately authenticated identity.
+    // sync/head: {sequence:int,lastEventId:string}, changed atomically with one
+    //   newly created event. This serializes append operations across devices.
+    // shops/{id}: validated shop profile with authUid and updatedAt audit fields.
+    // closes/{id}: immutable first-close snapshot with authenticated device UID.
+    // No derived financial balances are client-writable documents. The ledger
+    // replays immutable sequenced events and independently rejects overpayments.
+    // Clients cannot enrol, modify membership, rewrite events, or delete history.
+
+    function signedIn() { return request.auth != null; }
+    function enrolled(agency) {
+      return signedIn()
+        && request.auth.token.agencyId == agency
+        && exists(/databases/$(database)/documents/agencies/$(agency))
+        && get(/databases/$(database)/documents/agencies/$(agency)/devices/$(request.auth.uid)).data.active == true;
+    }
+    function text(value, minimum, maximum) {
+      return value is string && value.size() >= minimum && value.size() <= maximum;
+    }
+    function id(value) { return text(value, 1, 120) && value.matches('^[A-Za-z0-9_-]+$'); }
+    function money(value) { return value is int && value >= 0 && value <= 99999999999; }
+    function positiveMoney(value) { return money(value) && value > 0; }
+    function day(value) { return text(value, 10, 10) && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
+    function instant(value) { return text(value, 20, 35) && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$'); }
+    function optionalText(data, key, maximum) { return !(key in data) || text(data[key], 0, maximum); }
+    function stringAt(list, index) { return list.size() <= index || id(list[index]); }
+    function photoIds(value) {
+      return value is list && value.size() <= 5
+        && stringAt(value, 0) && stringAt(value, 1) && stringAt(value, 2)
+        && stringAt(value, 3) && stringAt(value, 4);
+    }
+    function validCheque(data) {
+      return data is map
+        && data.keys().hasAll(['id','bank','number','amount','date','photoIds'])
+        && data.keys().hasOnly(['id','bank','number','amount','date','photoIds'])
+        && id(data.id) && text(data.bank, 1, 120) && text(data.number, 1, 80)
+        && positiveMoney(data.amount) && day(data.date) && photoIds(data.photoIds);
+    }
+    function chequeAt(list, index) { return list.size() <= index || validCheque(list[index]); }
+    function validCheques(value) {
+      return value is list && value.size() <= 5
+        && chequeAt(value, 0) && chequeAt(value, 1) && chequeAt(value, 2)
+        && chequeAt(value, 3) && chequeAt(value, 4);
+    }
+    function validChequeAllocation(data) {
+      return data is map && data.keys().hasAll(['chequeId','amount'])
+        && data.keys().hasOnly(['chequeId','amount'])
+        && id(data.chequeId) && positiveMoney(data.amount);
+    }
+    function chequeAllocationAt(list, index) { return list.size() <= index || validChequeAllocation(list[index]); }
+    function validAllocation(data) {
+      return data is map
+        && data.keys().hasAll(['invoiceId','cash','chequeAmounts'])
+        && data.keys().hasOnly(['invoiceId','cash','chequeAmounts'])
+        && id(data.invoiceId) && money(data.cash)
+        && data.chequeAmounts is list && data.chequeAmounts.size() <= 5
+        && chequeAllocationAt(data.chequeAmounts, 0)
+        && chequeAllocationAt(data.chequeAmounts, 1)
+        && chequeAllocationAt(data.chequeAmounts, 2)
+        && chequeAllocationAt(data.chequeAmounts, 3)
+        && chequeAllocationAt(data.chequeAmounts, 4);
+    }
+    function allocationAt(list, index) { return list.size() <= index || validAllocation(list[index]); }
+    function validAllocations(value) {
+      return value is list && value.size() >= 1 && value.size() <= 10
+        && allocationAt(value, 0) && allocationAt(value, 1) && allocationAt(value, 2)
+        && allocationAt(value, 3) && allocationAt(value, 4) && allocationAt(value, 5)
+        && allocationAt(value, 6) && allocationAt(value, 7) && allocationAt(value, 8)
+        && allocationAt(value, 9);
+    }
+    function baseKeys() {
+      return ['id','kind','date','createdAt','operatorId','deviceId','shopId',
+        'authUid','serverSequence','disposition','conflictReason'];
+    }
+    function validBase(data, eventId) {
+      return data.keys().hasAll(['id','kind','date','createdAt','operatorId','deviceId',
+          'shopId','authUid','serverSequence','disposition'])
+        && data.id == eventId && id(data.id) && id(data.shopId) && id(data.deviceId)
+        && data.authUid == request.auth.uid
+        && day(data.date) && instant(data.createdAt)
+        && data.operatorId in ['me','brother']
+        && data.disposition in ['applied','conflict']
+        && (data.disposition != 'conflict' || ('conflictReason' in data && text(data.conflictReason, 1, 1000)))
+        && optionalText(data, 'conflictReason', 1000)
+        && data.serverSequence is int && data.serverSequence > 0;
+    }
+    function validInvoice(data) {
+      return data.keys().hasOnly(baseKeys().concat(['reference','total','cash','cheques','dueDate','photoIds']))
+        && data.keys().hasAll(['reference','total','cash','cheques','photoIds'])
+        && text(data.reference, 1, 120) && positiveMoney(data.total) && money(data.cash)
+        && validCheques(data.cheques) && photoIds(data.photoIds)
+        && (!('dueDate' in data) || day(data.dueDate));
+    }
+    function validCollection(data) {
+      return data.keys().hasOnly(baseKeys().concat(['cash','cheques','allocations','photoIds']))
+        && data.keys().hasAll(['cash','cheques','allocations','photoIds'])
+        && money(data.cash) && validCheques(data.cheques)
+        && validAllocations(data.allocations) && photoIds(data.photoIds);
+    }
+    function validChequeStatus(data) {
+      return data.keys().hasOnly(baseKeys().concat(['chequeId','status']))
+        && data.keys().hasAll(['chequeId','status'])
+        && id(data.chequeId) && data.status in ['deposited','cleared','returned'];
+    }
+    function validCorrection(data) {
+      return data.keys().hasOnly(baseKeys().concat(['targetId','reason','total','cash']))
+        && data.keys().hasAll(['targetId','reason','total','cash'])
+        && id(data.targetId) && text(data.reason, 1, 1000)
+        && positiveMoney(data.total) && money(data.cash);
+    }
+    function validEvent(data, eventId) {
+      return validBase(data, eventId)
+        && ((data.kind == 'invoice' && validInvoice(data))
+          || (data.kind == 'collection' && validCollection(data))
+          || (data.kind == 'cheque-status' && validChequeStatus(data))
+          || (data.kind == 'correction' && validCorrection(data)));
+    }
+    function appendMatchesHead(agency, data) {
+      let before = get(/databases/$(database)/documents/agencies/$(agency)/sync/head).data;
+      let after = getAfter(/databases/$(database)/documents/agencies/$(agency)/sync/head).data;
+      return data.serverSequence == before.sequence + 1
+        && after.sequence == data.serverSequence && after.lastEventId == data.id;
+    }
+    function validHead(agency, data) {
+      let event = getAfter(/databases/$(database)/documents/agencies/$(agency)/events/$(data.lastEventId)).data;
+      return data.keys().hasAll(['sequence','lastEventId'])
+        && data.keys().hasOnly(['sequence','lastEventId'])
+        && data.sequence is int && data.sequence == resource.data.sequence + 1
+        && id(data.lastEventId)
+        && !exists(/databases/$(database)/documents/agencies/$(agency)/events/$(data.lastEventId))
+        && event.serverSequence == data.sequence && event.authUid == request.auth.uid;
+    }
+
+    function validShop(data, shopId) {
+      return data.keys().hasAll(['id','name','authUid','updatedAt'])
+        && data.keys().hasOnly(['id','name','contact','phone','village','route','latitude',
+          'longitude','photoIds','notes','createdAt','authUid','updatedAt'])
+        && data.id == shopId && id(data.id) && text(data.name, 1, 120)
+        && data.authUid == request.auth.uid && instant(data.updatedAt)
+        && optionalText(data, 'contact', 120) && optionalText(data, 'phone', 40)
+        && optionalText(data, 'village', 120) && optionalText(data, 'route', 120)
+        && optionalText(data, 'notes', 2000)
+        && (!('createdAt' in data) || instant(data.createdAt))
+        && (!('photoIds' in data) || photoIds(data.photoIds))
+        && (!('latitude' in data) || (data.latitude is number && data.latitude >= -90 && data.latitude <= 90))
+        && (!('longitude' in data) || (data.longitude is number && data.longitude >= -180 && data.longitude <= 180))
+        && (('latitude' in data) == ('longitude' in data));
+    }
+    function validFigures(data) {
+      return data is map
+        && data.keys().hasAll(['invoiceValue','newCredit','cashFromInvoices','cashFromCollections',
+          'expectedCash','chequesReceived','chequesDeposited','chequesCleared','chequesReturned'])
+        && data.keys().hasOnly(['invoiceValue','newCredit','cashFromInvoices','cashFromCollections',
+          'expectedCash','chequesReceived','chequesDeposited','chequesCleared','chequesReturned'])
+        && money(data.invoiceValue) && money(data.newCredit) && money(data.cashFromInvoices)
+        && money(data.cashFromCollections) && money(data.expectedCash)
+        && data.expectedCash == data.cashFromInvoices + data.cashFromCollections
+        && money(data.chequesReceived) && money(data.chequesDeposited)
+        && money(data.chequesCleared) && money(data.chequesReturned);
+    }
+    function validClose(data, closeId) {
+      return data.keys().hasAll(['id','date','createdAt','operatorId','deviceId','countedCash','snapshot','authUid'])
+        && data.keys().hasOnly(['id','date','createdAt','operatorId','deviceId','countedCash',
+          'snapshot','route','filterOperatorId','note','authUid'])
+        && data.id == closeId && id(data.id) && id(data.deviceId)
+        && data.authUid == request.auth.uid
+        && day(data.date) && instant(data.createdAt) && data.operatorId in ['me','brother']
+        && money(data.countedCash) && validFigures(data.snapshot)
+        && optionalText(data, 'route', 120) && optionalText(data, 'note', 2000)
+        && (!('filterOperatorId' in data) || data.filterOperatorId in ['me','brother']);
+    }
+
+    match /agencies/{agency} {
+      allow read: if enrolled(agency);
+      allow write: if false;
+      match /devices/{uid} {
+        // Read own membership for enrolment and revocation detection only.
+        allow read: if signedIn() && request.auth.uid == uid && request.auth.token.agencyId == agency;
+        allow write: if false;
+      }
+      match /events/{eventId} {
+        allow read: if enrolled(agency);
+        allow create: if enrolled(agency) && validEvent(request.resource.data, eventId)
+          && appendMatchesHead(agency, request.resource.data);
+        allow update, delete: if false;
+      }
+      match /sync/head {
+        allow read: if enrolled(agency);
+        allow update: if enrolled(agency) && validHead(agency, request.resource.data);
+        allow create, delete: if false;
+      }
+      match /shops/{shopId} {
+        allow read: if enrolled(agency);
+        allow create: if enrolled(agency) && validShop(request.resource.data, shopId);
+        allow update: if enrolled(agency) && validShop(request.resource.data, shopId)
+          && request.resource.data.id == resource.data.id
+          && (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
+        allow delete: if false;
+      }
+      match /closes/{closeId} {
+        allow read: if enrolled(agency);
+        allow create: if enrolled(agency) && validClose(request.resource.data, closeId);
+        allow update, delete: if false;
+      }
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

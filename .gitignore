@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+*.log
+*.tsbuildinfo
+.firebase/
+*-key.json
+service-account*.json
+
+*.zip
+.openai/
+.vercel
+

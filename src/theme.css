@@ -1,0 +1,118 @@
+/* Cream paper, forest ink, and soft elevation shared by every viewport. */
+:root {
+  --ink: #1e2d25;
+  --green: #234c3c;
+  --muted: #59645a;
+  --line: #dedbd0;
+  --surface: #fcfaf4;
+  --mint: #e9eee3;
+  --amber: #80500b;
+  --red: #9e3437;
+  --paper: #f3f0e8;
+  --forest: #213b31;
+  --shadow: 0 5px 15px #2c32230b;
+  color: var(--ink);
+  background: var(--paper);
+}
+body,.login {background: var(--paper)}
+h1 {letter-spacing: -.055em}
+h2,h3 {letter-spacing: -.025em}
+.sidebar {background: #eeebe1}
+.topbar,.modal-header,.modal-footer {background: var(--paper)}
+.brand-mark,.primary {background: var(--forest);border-color: var(--forest)}
+.brand-mark {border-radius: 14px}
+.primary:hover {background:#173226}
+.nav-item.active {background: var(--forest);color:#fffaf0}
+.nav-item.active .nav-count {background:#476054;color:#fffaf0}
+.nav-item:hover:not(.active),.icon-button:hover,.ghost:hover,.secondary:hover {background:#e8e7dc}
+.agency-info,.demo-banner {background:#eaece2;border-color:#dbdfd3}
+.avatar,.agency-avatar,.shop-avatar,.entry-icon,.row-icon,.choice-icon,.timeline-icon,.balance-strip-icon {background:#e8ede2;color:var(--forest)}
+.lavender {background:#e7e4da;color:#514a38}
+.panel,.stat-card,.balance-strip {border-radius: 17px;box-shadow:var(--shadow);border-color:#e6e2d7}
+.stat-card.accent {background:#e8ede2;border-color:#d9e2d4}
+.stat-label {font-size:.79rem;letter-spacing:.035em}
+.stat-card>strong {color:#1c3026;font-weight:640}
+.stat-card.accent>strong {font-size:clamp(1.8rem,3vw,2.65rem)}
+.activity-table-header {background:#efede3}
+.badge.neutral,.count-chip {background:#ebe9df;color:#47594d}
+.badge.green,.entry-icon.green {background:#e5ecdf;color:#234c3c}
+.badge.blue,.choice-icon.blue {background:#e6ece5;color:#375949}
+.cash-card {background:var(--forest);border-radius:17px}
+.button {border-radius:12px}
+.secondary,.date-control,.select-control,.search-box,input,select,textarea {background-color:var(--surface)}
+.select-control select,.search-box input,.date-control input {background:transparent}
+.shop-stats>div,.entry-summary,.selected-shop,.collection-balance {background:var(--mint)}
+.shop-option,.choice-list>button {background:var(--surface)}
+.modal,.receipt-image {background:var(--paper)}
+.modal {border-radius:20px}
+.entry-section,.cheque-form,.quick-shop {background:var(--surface);border-radius:15px}
+.modal-backdrop {background:#15271fc2}
+.login-card {border-radius:22px}
+.bottom-nav-slot {display:contents}
+@media(max-width:900px){
+  .bottom-nav {
+    left:50%;right:auto;transform:translateX(-50%);
+    width:min(calc(100% - 28px),520px);
+    bottom:max(10px,env(safe-area-inset-bottom));
+    justify-content:space-evenly;align-items:center;gap:2px;
+    min-height:62px;padding:5px;
+    border:1px solid #3a4c41;border-radius:40px;
+    background:var(--forest);box-shadow:0 8px 25px #152a2840;
+  }
+  .bottom-nav button {min-width:0;width:55px;min-height:47px;border-radius:25px;color:#e2e9df;font-size:.67rem}
+  .bottom-nav button.active {color:#fffaf0;background:#3d5649}
+  .bottom-nav .bottom-add {width:46px;height:46px;min-height:46px;background:#fcfaf4;color:var(--forest);margin:0 2px}
+  main {padding-bottom:92px}
+  .toast {bottom:calc(84px + env(safe-area-inset-bottom))}
+}
+@media(max-width:650px){
+  .page-heading h1 {font-size:1.95rem}
+  .page-heading:has(+.filterbar) .heading-action:has(svg.lucide-plus) {display:none}
+  .stats-grid {grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+  .stat-card {padding:10px 7px;border-radius:13px}
+  .stat-card.accent {grid-column:1/-1;text-align:center;padding:17px 8px 18px;background:transparent;border:0;box-shadow:none}
+  .stat-card.accent .stat-label {justify-content:center;letter-spacing:.13em;text-transform:uppercase}
+  .stat-card.accent .stat-label svg,.stat-card.accent .tiny-dot {display:none}
+  .stat-card.accent>strong {font-size:clamp(2.6rem,11.5vw,4rem);margin:4px 0 0}
+  .stat-card.accent>strong small {font-size:.47em}
+  .stat-card:not(.accent)>strong {font-size:clamp(.96rem,4vw,1.34rem);letter-spacing:-.035em}
+  .stat-card strong small {margin-right:3px}
+  .stat-card:not(.accent) .stat-label svg {display:none}
+  .stat-card:not(.accent) p {font-size:.69rem;line-height:1.35}
+  .entry-modal {border-radius:0}
+  .entry-modal .modal-footer .primary {min-width:120px}
+}
+@media print {
+  body,main,.panel,.report-preview {background:white}
+  .panel {box-shadow:none}
+}
+
+.insights-launch {display:flex;justify-content:flex-end;margin:0 0 10px}
+.analytics-kpis {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0 16px}
+.analytics-kpis>div {background:var(--mint);border-radius:12px;padding:12px;overflow-wrap:anywhere}
+.analytics-kpis span,.analytics-kpis strong,.analytics-kpis small {display:block}
+.analytics-kpis strong {font-size:1.25rem;margin:6px 0}
+.sales-bars {list-style:none;padding:0}
+.sales-bars li {display:grid;grid-template-columns:90px minmax(25px,1fr) auto;align-items:center;gap:7px;margin:8px 0;font-size:.84rem}
+.sales-track {background:var(--mint);border-radius:8px;height:9px;overflow:hidden}
+.sales-track div {background:var(--forest);height:100%;border-radius:8px}
+.thermal-options p {font-size:.85rem;margin:0 0 12px}
+.thermal-slip {margin:auto;padding:2mm;background:white;color:#000;font:10pt/1.28 ui-monospace,monospace;max-width:100%;overflow-wrap:anywhere}
+.thermal-80 {width:72mm}
+.thermal-58 {width:48mm;font-size:8pt}
+.thermal-slip header,.thermal-slip footer {text-align:center}
+.thermal-slip p {font:inherit;color:inherit;margin:5px 0}
+.thermal-slip dl {margin:6px 0;padding:5px 0;border-block:1px dashed #000}
+.thermal-slip dl div {display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px;padding:2px 0;break-inside:avoid}
+.thermal-slip dd {margin:0;white-space:nowrap}
+@media(max-width:500px){.analytics-kpis{grid-template-columns:1fr}.analytics-kpis>div{padding:9px 11px}}
+@media print{
+  .app-shell:has(.thermal-slip)>:not(.modal-backdrop),
+  .app-shell:has(.thermal-slip) .modal-header,
+  .app-shell:has(.thermal-slip) .modal-footer,
+  .app-shell:has(.thermal-slip) .thermal-options {display:none!important}
+  .app-shell:has(.thermal-slip) .modal-backdrop,
+  .app-shell:has(.thermal-slip) .modal,
+  .app-shell:has(.thermal-slip) .modal-body {display:block;position:static;max-height:none;width:auto;padding:0;border:0;border-radius:0;overflow:visible;box-shadow:none;background:white}
+  .thermal-slip {margin:0}
+}
