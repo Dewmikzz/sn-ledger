@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ArrowDownLeft, ArrowUpRight, Banknote, BookOpen, CalendarDays, Camera, Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock3, CreditCard, Download, Ellipsis, FileCheck2, FileText, HelpCircle, Image, Landmark, LayoutDashboard, LockKeyhole, MapPin, Menu, MoreHorizontal, Pencil, Plus, Printer, RefreshCw, Search, Settings, ShieldCheck, Smartphone, Store, Trash2, Upload, Wallet, Wifi, WifiOff, X } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpDown, ArrowUpRight, Banknote, BookOpen, CalendarDays, Camera, Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock3, CreditCard, Download, Ellipsis, FileCheck2, FileText, Fingerprint, HelpCircle, Image, Landmark, LayoutDashboard, ListFilter, LockKeyhole, MapPin, Menu, MoreHorizontal, Pencil, Plus, Printer, RefreshCw, Route, Search, Settings, Shield, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Store, Trash2, Upload, Wallet, Wifi, WifiOff, X } from 'lucide-react';
 import { businessDate, buildReport, createDayClose, deriveLedger, money, newId, parseLocationInput, shopSummary, toMinor } from './domain';
 import type { ChequeView, InvoiceView, LedgerData, LedgerEvent, OperatorId, Shop } from './domain';
 import { useLedger } from './store';
 import { configured, enrollDevice, watchDeviceIdentity, revokeLocalSession } from './firebase';
 import { hasPin, setPin, verifyPin, changePin, resetPinAfterOwnerEnrollment } from './pin';
+import { isBiometricsAvailable, isBiometricsEnrolled, registerBiometrics, verifyBiometrics, removeBiometrics } from './biometrics';
 import { clearPhotos, exportPhotos, restorePhotos, getPhoto, listPhotos, savePhoto } from './photos';
 import type { PhotoRecord } from './photos';
 import { EntryForm } from './EntryForm';
@@ -68,13 +69,86 @@ export default function App(){
  const requirePin=(title:string,onSuccess:()=>void)=>{if(operator&&hasPin(mode,operator))setPinPrompt({title,onSuccess});else onSuccess()};
  const [installPrompt,setInstallPrompt]=useState<any>(null); const [installOpen,setInstallOpen]=useState(false); const [menuOpen,setMenuOpen]=useState(false);
  const [localPhotos,setLocalPhotos]=useState<PhotoRecord[]>([]); const [photoVersion,setPhotoVersion]=useState(0);
+ const [preloader,setPreloader]=useState<{title?:string;subtitle?:string}|null>(null);
+ const [selectedRoute,setSelectedRoute]=useState('');
+ const [shopSort,setShopSort]=useState<'name'|'credit-desc'|'credit-asc'|'due-date'|'route'>('name');
+ const [activitySort,setActivitySort]=useState<'time-desc'|'time-asc'|'amount-desc'|'shop'>('time-desc');
+ const [showRoutesDeck,setShowRoutesDeck]=useState(false);
  const ledgerStore=useLedger(mode); const {data,ready,pendingCount,attentionCount,syncStatus}=ledgerStore;
  const deviceId=useMemo(()=>{let id=localStorage.getItem('si-device-id');if(!id){id=newId();localStorage.setItem('si-device-id',id)}return id},[]);
  const derived=useMemo(()=>deriveLedger(data),[data]);
  const routes=useMemo(()=>[...new Set(data.shops.map(s=>s.route).filter(Boolean))].sort() as string[],[data.shops]);
- const daily=useMemo(()=>buildReport(data,date,{route:route||undefined,operatorId:(filterOperator||undefined) as OperatorId|undefined}),[data,date,route,filterOperator]);
  const today=businessDate();
+ const daily=useMemo(()=>buildReport(data,date,{route:route||undefined,operatorId:(filterOperator||undefined) as OperatorId|undefined}),[data,date,route,filterOperator]);
+ const routeSummaries=useMemo<RouteSummary[]>(()=>{
+  const routesMap=new Map<string,RouteSummary>();
+  for(const s of data.shops){
+   const routeName=(s.route||s.village||'Other').trim();
+   if(!routesMap.has(routeName))routesMap.set(routeName,{name:routeName,shopCount:0,credit:0,pendingCheques:0,overdueInvoices:0});
+   const sum=routesMap.get(routeName)!;
+   sum.shopCount+=1;
+   const sSummary=shopSummary(data,s.id,derived);
+   sum.credit+=sSummary.credit;
+   sum.pendingCheques+=sSummary.pendingCheques;
+  }
+  for(const inv of derived.invoices){
+   if(inv.credit>0&&inv.dueDate&&inv.dueDate<today){
+    const s=data.shops.find(shop=>shop.id===inv.shopId);
+    const routeName=(s?.route||s?.village||'Other')?.trim()||'Other';
+    const sum=routesMap.get(routeName);
+    if(sum)sum.overdueInvoices+=1;
+   }
+  }
+  return Array.from(routesMap.values()).sort((a,b)=>b.credit-a.credit||a.name.localeCompare(b.name));
+ },[data.shops,derived,today]);
+ const sortedShops=useMemo(()=>{
+  const list=data.shops.filter(s=>{
+   const matchesSearch=[s.name,s.phone,s.village,s.route].join(' ').toLowerCase().includes(search.toLowerCase());
+   const matchesRoute=!selectedRoute||(s.route||s.village||'Other').trim().toLowerCase()===selectedRoute.trim().toLowerCase();
+   return matchesSearch&&matchesRoute;
+  });
+  list.sort((a,b)=>{
+   if(shopSort==='credit-desc')return shopSummary(data,b.id,derived).credit-shopSummary(data,a.id,derived).credit;
+   if(shopSort==='credit-asc')return shopSummary(data,a.id,derived).credit-shopSummary(data,b.id,derived).credit;
+   if(shopSort==='due-date'){
+    const dA=shopSummary(data,a.id,derived).nextDueDate||'9999-99-99';
+    const dB=shopSummary(data,b.id,derived).nextDueDate||'9999-99-99';
+    return dA.localeCompare(dB);
+   }
+   if(shopSort==='route')return (a.route||a.village||'').localeCompare(b.route||b.village||'');
+   return a.name.localeCompare(b.name);
+  });
+  return list;
+ },[data.shops,derived,search,selectedRoute,shopSort]);
+ const sortedDailyEntries=useMemo(()=>{
+  const list=daily.entries.filter(e=>`${shopName(e.shopId)} ${e.kind==='invoice'?e.reference:e.kind}`.toLowerCase().includes(search.toLowerCase()));
+  list.sort((a,b)=>{
+   if(activitySort==='time-asc')return a.createdAt.localeCompare(b.createdAt);
+   if(activitySort==='amount-desc'){
+    const getAmt=(ev:LedgerEvent)=>{
+     if(ev.kind==='invoice')return ev.total;
+     if(ev.kind==='collection')return ev.cash+ev.cheques.reduce((s,c)=>s+c.amount,0);
+     if(ev.kind==='correction')return ev.total;
+     return 0;
+    };
+    return getAmt(b)-getAmt(a);
+   }
+   if(activitySort==='shop')return shopName(a.shopId).localeCompare(shopName(b.shopId));
+   return b.createdAt.localeCompare(a.createdAt);
+  });
+  return list;
+ },[daily.entries,data.shops,search,activitySort]);
  const notify=(message:string)=>setToast(message);
+ const handleUnlock=(opId:OperatorId)=>{
+  setPreloader({
+   title:`Welcome, ${settings[opId]||(opId==='me'?'Saman Indika':'Brother')}`,
+   subtitle:'Authorized Distributor for Lakmee Export Lanka PVT LTD'
+  });
+  setTimeout(()=>{
+   setOperator(opId);
+   setPreloader(null);
+  },850);
+ };
  const switchMode=(next:Mode)=>{setMode(next);localStorage.setItem('si-mode',next);setSettings(readSettings(next));setOperator(next==='demo'&&!hasPin(next,'me')?'me':null);setPage('today');setRoute('');setSearch('');setSelectedShop(null);setFilterOperator('')};
  useEffect(()=>{const on=()=>setOnline(navigator.onLine);window.addEventListener('online',on);window.addEventListener('offline',on);const install=(e:Event)=>{e.preventDefault();setInstallPrompt(e)};window.addEventListener('beforeinstallprompt',install);return()=>{window.removeEventListener('online',on);window.removeEventListener('offline',on);window.removeEventListener('beforeinstallprompt',install)}},[]);
  useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),5000);return()=>clearTimeout(t)},[toast]);
@@ -90,7 +164,8 @@ export default function App(){
  const eventBase=(shopId:string)=>({id:newId(),date:today,createdAt:new Date().toISOString(),operatorId:operator!,deviceId,shopId});
  const incomplete=!online||pendingCount>0||mode==='demo';
  const insightsWarning=mode==='demo'?'Demo · sample records only.':!online?'Offline · figures may be incomplete.':pendingCount?'Pending sync · figures may be incomplete.':'';
- if(!operator || (mode==='live'&&!identity))return <><Login mode={mode} settings={settings} hasIdentity={!!identity} onUnlock={setOperator} onDemo={()=>switchMode('demo')} onEnroll={()=>setEnrolOpen(true)}/>{enrolOpen&&<Enroll onClose={()=>setEnrolOpen(false)} onDone={()=>{setEnrolOpen(false);switchMode('live');notify('Device enrolled. Set a personal PIN for each operator.')}}/>}{toast&&<div className="toast"><Check size={18}/>{toast}</div>}</>;
+ if(preloader)return <Preloader {...preloader}/>;
+ if(!operator || (mode==='live'&&!identity))return <><Login mode={mode} settings={settings} hasIdentity={!!identity} onUnlock={handleUnlock} onDemo={()=>switchMode('demo')} onEnroll={()=>setEnrolOpen(true)}/>{enrolOpen&&<Enroll onClose={()=>setEnrolOpen(false)} onDone={()=>{setEnrolOpen(false);switchMode('live');notify('Device enrolled. Set a personal PIN for each operator.')}}/>}{toast&&<div className="toast"><Check size={18}/>{toast}</div>}</>;
  return <div className="app-shell">
   <aside className={`sidebar ${menuOpen?'mobile-open':''}`}>
    <a href="#today" className="brand" onClick={e=>{e.preventDefault();goto('today')}}><div className="brand-mark"><BookOpen size={25}/></div><div><strong>SI Ledger</strong><span>SAMAN INDIKA</span></div></a>
@@ -108,16 +183,16 @@ export default function App(){
     {!ready?<div className="loading"><RefreshCw className="spin"/> Opening your ledger…</div>:<>
     {page==='today'&&<>
      <div className="insights-launch"><button className="button secondary" onClick={()=>setAnalyticsOpen(true)}><LayoutDashboard size={16}/>Sales analytics</button></div><div className="stats-grid"><Stat label="Expected cash" value={daily.expectedCash} icon={<Wallet size={19}/>} detail="Cash to reconcile today" accent/><Stat label="Invoice value" value={daily.invoiceValue} icon={<FileText size={19}/>} detail={`${daily.invoiceCount} invoices recorded`}/><Stat label="New credit" value={daily.newCredit} icon={<Clock3 size={19}/>} detail="To collect from today’s invoices"/><Stat label="Cheques received" value={daily.chequesReceived} icon={<CreditCard size={19}/>} detail={`${derived.cheques.filter(c=>c.receivedDate===date&&(!route||data.shops.find(s=>s.id===c.shopId)?.route===route)&&(!filterOperator||c.operatorId===filterOperator)).length} cheques received today`}/></div>
-     <div className="today-grid"><section className="panel activity-panel"><div className="panel-heading"><div><h2>Today’s activity <span className="count-chip">{daily.entries.length}</span></h2><p>Invoices and collections, all in one place.</p></div><button className="icon-button" title="Open full daily report" onClick={()=>goto('reports')}><MoreHorizontal size={21}/></button></div><div className="activity-toolbar"><label className="search-box"><Search size={17}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search shops or invoice references" aria-label="Search activity"/></label><span className="record-count">{daily.entries.length} entries</span></div><Activity data={data} events={daily.entries.filter(e=>`${shopName(e.shopId)} ${e.kind==='invoice'?e.reference:e.kind}`.toLowerCase().includes(search.toLowerCase()))} invoices={derived.invoices} onShop={openShop} operatorName={operatorName} statuses={derived.statuses} onPhotos={setPhotos} onCorrect={setCorrection}/><div className="panel-footer"><ShieldCheck size={14}/><span>{mode==='demo'?'Sample records · demo only':'Every entry records the operator and device'}</span><button onClick={()=>goto('reports')}>View daily report <ChevronRight size={14}/></button></div></section>
+     <div className="today-grid"><section className="panel activity-panel"><div className="panel-heading"><div><h2>Today’s activity <span className="count-chip">{sortedDailyEntries.length}</span></h2><p>Invoices and collections, all in one place.</p></div><button className="icon-button" title="Open full daily report" onClick={()=>goto('reports')}><MoreHorizontal size={21}/></button></div><div className="activity-toolbar"><label className="search-box"><Search size={17}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search shops or invoice references" aria-label="Search activity"/></label><div className="sort-select-chip"><ArrowUpDown size={14}/><select aria-label="Sort activity" value={activitySort} onChange={e=>setActivitySort(e.target.value as any)}><option value="time-desc">Newest first</option><option value="time-asc">Oldest first</option><option value="amount-desc">Amount: High to Low</option><option value="shop">Shop (A-Z)</option></select></div><span className="record-count">{sortedDailyEntries.length} entries</span></div><Activity data={data} events={sortedDailyEntries} invoices={derived.invoices} onShop={openShop} operatorName={operatorName} statuses={derived.statuses} onPhotos={setPhotos} onCorrect={setCorrection}/><div className="panel-footer"><ShieldCheck size={14}/><span>{mode==='demo'?'Sample records · demo only':'Every entry records the operator and device'}</span><button onClick={()=>goto('reports')}>View daily report <ChevronRight size={14}/></button></div></section>
       <div className="today-rail"><section className="panel attention-panel"><div className="panel-heading"><h2><span className="attention-icon"><CircleAlert size={17}/></span>Needs attention</h2><Badge tone="amber">{derived.invoices.filter(i=>i.credit>0&&!!i.dueDate&&i.dueDate<today).length+derived.cheques.filter(c=>c.status==='received'&&c.date<=today).length}</Badge></div><AttentionRow icon={<Clock3 size={17}/>} title="Overdue credit" subtitle={`${derived.invoices.filter(i=>i.credit>0&&i.dueDate&&i.dueDate<today).length} invoices to follow up`} value={money(derived.invoices.filter(i=>i.credit>0&&i.dueDate&&i.dueDate<today).reduce((s,i)=>s+i.credit,0))} tone="red" onClick={()=>{goto('shops');setSelectedShop(derived.invoices.find(i=>i.credit>0&&i.dueDate&&i.dueDate<today)?.shopId||null)}}/><AttentionRow icon={<Landmark size={17}/>} title="Ready to deposit" subtitle="Cheques dated today or earlier" value={`${derived.cheques.filter(c=>c.status==='received'&&c.date<=today).length} cheques`} tone="amber" onClick={()=>goto('cheques')}/><AttentionRow icon={<Camera size={17}/>} title="Receipt photos needed" subtitle="Keep thermal invoices readable" value={`${derived.invoices.filter(i=>!i.photoIds.length).length} invoices`} onClick={()=>goto('shops')}/>{attentionCount>0&&<AttentionRow icon={<CircleAlert size={17}/>} title="Sync needs attention" subtitle="Submissions preserved for review" value={`${attentionCount} entries`} tone="red" onClick={()=>goto('reports')}/>}</section>
       <section className="cash-card"><div className="cash-card-icon"><Banknote size={22}/></div><h2>A tidy end to the day.</h2><p>Count your cash, check the difference,<br className="desktop-br"/> and close with confidence.</p><button className="button secondary" onClick={()=>setCloseOpen(true)}><Wallet size={16}/>Reconcile cash</button></section>
       <div className="device-note"><ShieldCheck size={18}/><div><b>Your work stays with you.</b><p>Entries work offline. Keep a regular ZIP backup of your receipt photos.</p></div></div>
      </div></div>
      <div className="balance-strip"><div><span className="balance-strip-icon"><Store size={20}/></span><span>Across your shop ledgers<small>All dates · all routes</small></span></div><div><span>Outstanding credit</span><b>{money(derived.creditOutstanding)}</b></div><div><span>Pending cheques</span><b>{money(derived.pendingCheques)}</b></div><button onClick={()=>goto('shops')}>Open shop ledgers <ChevronRight size={15}/></button></div>
     </>}
-    {page==='shops'&&<div className="shops-layout"><section className="panel shop-list-panel"><div className="activity-toolbar"><label className="search-box"><Search size={17}/><input aria-label="Search shops" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Name, phone, village or route"/></label></div><div className="shop-list">{data.shops.filter(s=>[s.name,s.phone,s.village,s.route].join(' ').toLowerCase().includes(search.toLowerCase())).map(s=>{const summary=shopSummary(data,s.id,derived);return <button key={s.id} className={`shop-row ${selectedShop===s.id?'selected':''}`} onClick={()=>setSelectedShop(s.id)}><span className="shop-avatar">{initials(s.name)}</span><span className="shop-row-info"><b>{s.name}</b><small>{s.village||s.route||'No location added'}</small></span><span className="shop-row-money"><b>{money(summary.credit)}</b><small>credit outstanding</small></span><ChevronRight size={15}/></button>})}{data.shops.length===0&&<Empty title="Your first shop" body="Add a shop to start its collection ledger."/>}</div></section><section className="panel shop-detail">{selectedShop&&data.shops.some(s=>s.id===selectedShop)?(()=>{const s=data.shops.find(s=>s.id===selectedShop)!;const summary=shopSummary(data,s.id,derived);return <><div className="shop-detail-header"><div className="shop-profile"><span className="shop-avatar large">{initials(s.name)}</span><div><h2>{s.name}</h2><p><MapPin size={14}/>{[s.village,s.route!==s.village?s.route:null].filter(Boolean).join(' · ')||'Location not added'}</p></div></div><button className="button ghost" onClick={()=>requirePin(`Edit ${s.name}`,()=>setShopEditor(s))}>Edit shop</button></div><div className="shop-stats"><div><span>Credit outstanding</span><strong>{money(summary.credit)}</strong></div><div><span>Pending cheques</span><strong>{money(summary.pendingCheques)}</strong></div><div><span>Next due</span><strong>{summary.nextDueDate?formatDate(summary.nextDueDate,true):'All caught up'}</strong></div></div><div className="shop-actions"><button className="button primary" onClick={()=>setEntry({kind:'invoice',shopId:s.id})}><Plus size={16}/>Record invoice</button><button className="button secondary" onClick={()=>setEntry({kind:'collection',shopId:s.id})}><Banknote size={16}/>Collect payment</button></div><div className="shop-contact">{s.contact&&<span>{s.contact}</span>}{s.phone&&<a href={`tel:${s.phone.replace(/\s/g,'')}`}>{s.phone}</a>}{s.latitude!==undefined&&s.longitude!==undefined&&<a href={`https://www.google.com/maps/search/?api=1&query=${s.latitude},${s.longitude}`} target="_blank" rel="noreferrer"><MapPin size={13}/>Open in Maps</a>}{!!s.photoIds?.length&&<button className="text-button" onClick={()=>setPhotos({ids:s.photoIds!,title:s.name})}>Storefront photo</button>}</div>{s.notes&&<div className="shop-notes">{s.notes}</div>}<div className="section-heading"><h3>Chronological ledger</h3><Badge>{data.events.filter(e=>e.shopId===s.id).length} entries</Badge></div><div className="ledger-timeline">{[...derived.events].filter(e=>e.shopId===s.id).reverse().map(e=>{const inv=e.kind==='invoice'?derived.invoices.find(i=>i.id===e.id):null;const allPhotos=getEventPhotoIds(e);return <div className="timeline-entry" key={e.id}><div className={`timeline-icon ${e.kind==='collection'?'green':''}`}>{e.kind==='invoice'?<FileText size={17}/>:e.kind==='collection'?<Banknote size={17}/>:<CreditCard size={17}/>}</div><div className="timeline-content"><div className="timeline-title"><b>{e.kind==='invoice'?e.reference:e.kind==='collection'?'Balance collected':e.kind==='correction'?'Invoice corrected':`Cheque ${e.status}`}</b><strong>{e.kind==='invoice'?money(inv?.total||e.total):e.kind==='collection'?money(e.cash+e.cheques.reduce((n,c)=>n+c.amount,0)):e.kind==='correction'?money(e.total):money(derived.cheques.find(c=>c.id===e.chequeId)?.amount||0)}</strong></div><small>{formatDate(e.date,true)} · {operatorName(e.operatorId)}</small>{derived.statuses[e.id]?.status==='conflict'?<p className="error-text">{derived.statuses[e.id].reason}</p>:e.kind==='invoice'?<><p>{money(inv?.cash??e.cash)} cash · {money(inv?.pendingCheques||0)} pending cheque · <b>{money(inv?.credit||0)} credit</b></p><div className="timeline-actions"><button className="text-button" onClick={()=>setPhotos({ids:allPhotos,title:`${e.reference} photos`})}><Camera size={14}/>{allPhotos.length?`${allPhotos.length} photo${allPhotos.length>1?'s':''}`:'Photo needed'}</button>{inv&&<button className="button secondary small-action-button" onClick={()=>setCorrection(inv)}><Pencil size={13}/>Edit invoice</button>}</div></>:e.kind==='correction'?<p>{e.reason}</p>:e.kind==='collection'?<p>{money(e.cash)} cash · allocated to {e.allocations.length} invoice{e.allocations.length===1?'':'s'}</p>:<p>Balance updated once. No additional cash collection.</p>}</div></div>})}{!data.events.some(e=>e.shopId===s.id)&&<Empty title="A fresh ledger" body="Record an invoice or collect an existing recorded balance."/>}</div></>})():<Empty title="Every shop has a story" body="Select a shop to see its balances, receipts, and collection history."/>}</section></div>}
+    {page==='shops'&&<div className="shops-layout"><section className="panel shop-list-panel"><div className="routes-panel-header" style={{padding:'12px 14px 0'}}><button className="button secondary small-action-button" type="button" onClick={()=>setShowRoutesDeck(!showRoutesDeck)}><Route size={15}/><span>{showRoutesDeck?'Hide routes':('Routes ('+routeSummaries.length+')')}</span></button><div className="sorting-toolbar" style={{margin:0}}><div className="sort-select-chip"><MapPin size={13}/><select aria-label="Filter by route" value={selectedRoute} onChange={e=>setSelectedRoute(e.target.value)}><option value="">All routes ({data.shops.length})</option>{routeSummaries.map(r=><option key={r.name} value={r.name}>{r.name} ({r.shopCount})</option>)}</select></div><div className="sort-select-chip"><ArrowUpDown size={13}/><select aria-label="Sort shops" value={shopSort} onChange={e=>setShopSort(e.target.value as any)}><option value="name">Name (A-Z)</option><option value="credit-desc">Credit: High to Low</option><option value="credit-asc">Credit: Low to High</option><option value="due-date">Next due date</option><option value="route">Route name</option></select></div></div></div>{showRoutesDeck&&<div style={{padding:'0 14px'}}><RoutesOverview routes={routeSummaries} selectedRoute={selectedRoute} onSelectRoute={setSelectedRoute}/></div>}<div className="activity-toolbar"><label className="search-box"><Search size={17}/><input aria-label="Search shops" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Name, phone, village or route"/></label></div><div className="shop-list">{sortedShops.map(s=>{const summary=shopSummary(data,s.id,derived);return <button key={s.id} className={`shop-row ${selectedShop===s.id?'selected':''}`} onClick={()=>setSelectedShop(s.id)}><span className="shop-avatar">{initials(s.name)}</span><span className="shop-row-info"><b>{s.name}</b><small>{s.village||s.route||'No location added'}</small></span><span className="shop-row-money"><b>{money(summary.credit)}</b><small>credit outstanding</small></span><ChevronRight size={15}/></button>})}{sortedShops.length===0&&<Empty title="No shops found" body={selectedRoute?('No shops found on route "'+selectedRoute+'".'):"Add a shop to start its collection ledger."}/>}</div></section><section className="panel shop-detail">{selectedShop&&data.shops.some(s=>s.id===selectedShop)?(()=>{const s=data.shops.find(s=>s.id===selectedShop)!;const summary=shopSummary(data,s.id,derived);return <><div className="shop-detail-header"><div className="shop-profile"><span className="shop-avatar large">{initials(s.name)}</span><div><h2>{s.name}</h2><p><MapPin size={14}/>{[s.village,s.route!==s.village?s.route:null].filter(Boolean).join(' · ')||'Location not added'}</p></div></div><button className="button ghost" onClick={()=>requirePin(`Edit ${s.name}`,()=>setShopEditor(s))}>Edit shop</button></div><div className="shop-stats"><div><span>Credit outstanding</span><strong>{money(summary.credit)}</strong></div><div><span>Pending cheques</span><strong>{money(summary.pendingCheques)}</strong></div><div><span>Next due</span><strong>{summary.nextDueDate?formatDate(summary.nextDueDate,true):'All caught up'}</strong></div></div><div className="shop-actions"><button className="button primary" onClick={()=>setEntry({kind:'invoice',shopId:s.id})}><Plus size={16}/>Record invoice</button><button className="button secondary" onClick={()=>setEntry({kind:'collection',shopId:s.id})}><Banknote size={16}/>Collect payment</button></div><div className="shop-contact">{s.contact&&<span>{s.contact}</span>}{s.phone&&<a href={`tel:${s.phone.replace(/\s/g,'')}`}>{s.phone}</a>}{s.latitude!==undefined&&s.longitude!==undefined&&<a href={`https://www.google.com/maps/search/?api=1&query=${s.latitude},${s.longitude}`} target="_blank" rel="noreferrer"><MapPin size={13}/>Open in Maps</a>}{!!s.photoIds?.length&&<button className="text-button" onClick={()=>setPhotos({ids:s.photoIds!,title:s.name})}>Storefront photo</button>}</div>{s.notes&&<div className="shop-notes">{s.notes}</div>}<div className="section-heading"><h3>Chronological ledger</h3><Badge>{data.events.filter(e=>e.shopId===s.id).length} entries</Badge></div><div className="ledger-timeline">{[...derived.events].filter(e=>e.shopId===s.id).reverse().map(e=>{const inv=e.kind==='invoice'?derived.invoices.find(i=>i.id===e.id):null;const allPhotos=getEventPhotoIds(e);return <div className="timeline-entry" key={e.id}><div className={`timeline-icon ${e.kind==='collection'?'green':''}`}>{e.kind==='invoice'?<FileText size={17}/>:e.kind==='collection'?<Banknote size={17}/>:<CreditCard size={17}/>}</div><div className="timeline-content"><div className="timeline-title"><b>{e.kind==='invoice'?e.reference:e.kind==='collection'?'Balance collected':e.kind==='correction'?'Invoice corrected':`Cheque ${e.status}`}</b><strong>{e.kind==='invoice'?money(inv?.total||e.total):e.kind==='collection'?money(e.cash+e.cheques.reduce((n,c)=>n+c.amount,0)):e.kind==='correction'?money(e.total):money(derived.cheques.find(c=>c.id===e.chequeId)?.amount||0)}</strong></div><small>{formatDate(e.date,true)} · {operatorName(e.operatorId)}</small>{derived.statuses[e.id]?.status==='conflict'?<p className="error-text">{derived.statuses[e.id].reason}</p>:e.kind==='invoice'?<><p>{money(inv?.cash??e.cash)} cash · {money(inv?.pendingCheques||0)} pending cheque · <b>{money(inv?.credit||0)} credit</b></p><div className="timeline-actions"><button className="text-button" onClick={()=>setPhotos({ids:allPhotos,title:`${e.reference} photos`})}><Camera size={14}/>{allPhotos.length?`${allPhotos.length} photo${allPhotos.length>1?'s':''}`:'Photo needed'}</button>{inv&&<button className="button secondary small-action-button" onClick={()=>setCorrection(inv)}><Pencil size={13}/>Edit invoice</button>}</div></>:e.kind==='correction'?<p>{e.reason}</p>:e.kind==='collection'?<p>{money(e.cash)} cash · allocated to {e.allocations.length} invoice{e.allocations.length===1?'':'s'}</p>:<p>Balance updated once. No additional cash collection.</p>}</div></div>})}{!data.events.some(e=>e.shopId===s.id)&&<Empty title="A fresh ledger" body="Record an invoice or collect an existing recorded balance."/>}</div></>})():<Empty title="Every shop has a story" body="Select a shop to see its balances, receipts, and collection history."/>}</section></div>}
     {page==='cheques'&&<Cheques cheques={derived.cheques} data={data} onShop={openShop} onPhotos={setPhotos} onTransition={async(c,status)=>{try{await submit({...eventBase(c.shopId),kind:'cheque-status',chequeId:c.id,status});notify(`Cheque marked ${status}. Ledger updated.`)}catch(e){notify((e as Error).message)}}}/>}
-    {page==='reports'&&<><div className={`notice ${incomplete?'amber':'neutral'}`}><CircleAlert size={18}/><span>{mode==='demo'?'Demo report — sample records only. ':!online?'You are offline. This report may be incomplete. ':pendingCount?`${pendingCount} entries on this device are awaiting sync. `:'This device is up to date. '}Another device may still have unsynced entries.</span></div><div className="report-actions"><span>{formatDate(date)}</span><div><button className="button secondary" onClick={()=>exportCSV(data,date,route,filterOperator,settings.agency)}><Download size={16}/>Export CSV</button><button className="button secondary" onClick={()=>window.print()}><Printer size={16}/>Print report</button><button className="button secondary" onClick={()=>setThermalOpen(true)}><Printer size={16}/>Thermal report</button></div></div><div className="report-grid"><section className="panel report-preview"><div className="report-paper-heading"><div className="brand-mark small"><BookOpen size={22}/></div><div><h2>{settings.agency}</h2><p>Daily collections, credit & cheques</p></div><Badge tone="green">Daily report</Badge></div><div className="report-meta"><div><b>{formatDate(date)}</b><span>Polonnaruwa, Sri Lanka · Asia/Colombo</span></div><div><b>{route||'All routes'}</b><span>{filterOperator?operatorName(filterOperator as OperatorId):'Both operators'}</span></div></div><div className="report-section"><h3>Invoices & credit</h3><ReportLine label={`Invoice value recorded (${daily.invoiceCount})`} amount={daily.invoiceValue}/><ReportLine label="New credit issued" amount={daily.newCredit}/></div><div className="report-section"><h3>Cash reconciliation</h3><ReportLine label="Cash from this day’s invoices" amount={daily.cashFromInvoices}/><ReportLine label="Cash collected against balances" amount={daily.cashFromCollections}/><ReportLine label="Total expected cash" amount={daily.expectedCash} bold/><ReportLine label="Physical cash counted" amount={daily.physicalCash}/><ReportLine label="Difference (counted − expected)" amount={daily.difference} bold tone={daily.difference?'red':'green'}/></div><div className="report-section"><h3>Cheque movements</h3><ReportLine label="Received" amount={daily.chequesReceived}/><ReportLine label="Deposited" amount={daily.chequesDeposited}/><ReportLine label="Cleared" amount={daily.chequesCleared}/><ReportLine label="Returned" amount={daily.chequesReturned}/></div>{daily.originalClose&&<div className="close-note"><FileCheck2 size={18}/><div><b>Original close retained</b><p>{operatorName(daily.originalClose.operatorId)} · {new Date(daily.originalClose.createdAt).toLocaleString('en-GB',{timeZone:'Asia/Colombo'})}</p><p>Expected {money(daily.originalClose.snapshot.expectedCash)} · Counted {money(daily.originalClose.countedCash)} · Difference {money(daily.originalClose.countedCash-daily.originalClose.snapshot.expectedCash)}</p>{daily.revised&&<strong className="amber-text">Revised figures shown above. Original close is unchanged.</strong>}</div></div>}<div className="print-foot">Owner · Saman Indika · Polonnaruwa, Sri Lanka<br/>Developed by Dewmika Anusara · dew.pshycolab.com</div></section><div><section className="panel report-checks"><h2>Before you close</h2><AttentionRow icon={<Clock3 size={17}/>} title="Overdue balances" subtitle="Current balances due before report date" value={`${daily.overdueInvoices.length} invoices`} tone="red" onClick={()=>goto('shops')}/><AttentionRow icon={<Camera size={17}/>} title="Missing receipt photos" subtitle="Invoices recorded on this date" value={`${daily.missingPhotos.length} invoices`} tone="amber" onClick={()=>goto('shops')}/><AttentionRow icon={<RefreshCw size={17}/>} title="Awaiting sync" subtitle={mode==='demo'?'Demo records stay on this device':'Pending work on this device'} value={`${pendingCount} entries`} onClick={()=>ledgerStore.retrySync()}/></section>{daily.conflicts.length>0&&<section className="panel report-checks"><h2>Entries needing review</h2>{daily.conflicts.map(e=><div className="conflict-item" key={e.id}><b>{shopName(e.shopId)}</b><p>{derived.statuses[e.id]?.reason}</p><small>Submission retained · {operatorName(e.operatorId)}</small><button className="text-button" onClick={()=>openShop(e.shopId)}>Review shop ledger</button></div>)}</section>}{daily.corrections.length>0&&<section className="panel report-checks"><h2>Correction history</h2>{daily.corrections.map(e=><div className="conflict-item" key={e.id}><b>{shopName(e.shopId)}</b><p>{e.reason}</p><small>{formatDate(e.date,true)} · {operatorName(e.operatorId)} · revised invoice {money(e.total)}</small></div>)}</section>}<p className="report-hint"><ShieldCheck size={18}/>Closing the day preserves the original figures. Later corrections remain visible with a reason and operator.</p></div></div></>}
+    {page==='reports'&&<><div className={`notice ${incomplete?'amber':'neutral'}`}><CircleAlert size={18}/><span>{mode==='demo'?'Demo report — sample records only. ':!online?'You are offline. This report may be incomplete. ':pendingCount?`${pendingCount} entries on this device are awaiting sync. `:'This device is up to date. '}Another device may still have unsynced entries.</span></div><div className="report-actions"><span>{formatDate(date)}</span><div><button className="button secondary" onClick={()=>exportCSV(data,date,route,filterOperator,settings.agency)}><Download size={16}/>Export CSV</button><button className="button secondary" onClick={()=>window.print()}><Printer size={16}/>Print report</button><button className="button secondary" onClick={()=>setThermalOpen(true)}><Printer size={16}/>Thermal report</button></div></div><div className="report-grid"><section className="panel report-preview"><div className="report-paper-heading"><div className="report-distributor-header" style={{width:'100%'}}><div className="brand-mark small" style={{float:'right',margin:'0 0 10px 10px'}}><BookOpen size={22}/></div><h2 className="distributor-name">HG Saman Indika Wimalaratna</h2><div className="distributor-sub">Authorized Distributor for Lakmee Export Lanka PVT LTD</div><div className="distributor-addr">No 207/1, Palugasdamana, Polonnaruwa</div><div className="distributor-contact">Contact : 0765496411</div><div className="report-agency-title">{settings.agency} · Daily Collections &amp; Ledger Report</div></div></div><div className="report-meta"><div><b>{formatDate(date)}</b><span>Polonnaruwa, Sri Lanka · Asia/Colombo</span></div><div><b>{route||'All routes'}</b><span>{filterOperator?operatorName(filterOperator as OperatorId):'Both operators'}</span></div></div><div className="report-section"><h3>Invoices & credit</h3><ReportLine label={`Invoice value recorded (${daily.invoiceCount})`} amount={daily.invoiceValue}/><ReportLine label="New credit issued" amount={daily.newCredit}/></div><div className="report-section"><h3>Cash reconciliation</h3><ReportLine label="Cash from this day’s invoices" amount={daily.cashFromInvoices}/><ReportLine label="Cash collected against balances" amount={daily.cashFromCollections}/><ReportLine label="Total expected cash" amount={daily.expectedCash} bold/><ReportLine label="Physical cash counted" amount={daily.physicalCash}/><ReportLine label="Difference (counted − expected)" amount={daily.difference} bold tone={daily.difference?'red':'green'}/></div><div className="report-section"><h3>Cheque movements</h3><ReportLine label="Received" amount={daily.chequesReceived}/><ReportLine label="Deposited" amount={daily.chequesDeposited}/><ReportLine label="Cleared" amount={daily.chequesCleared}/><ReportLine label="Returned" amount={daily.chequesReturned}/></div>{daily.originalClose&&<div className="close-note"><FileCheck2 size={18}/><div><b>Original close retained</b><p>{operatorName(daily.originalClose.operatorId)} · {new Date(daily.originalClose.createdAt).toLocaleString('en-GB',{timeZone:'Asia/Colombo'})}</p><p>Expected {money(daily.originalClose.snapshot.expectedCash)} · Counted {money(daily.originalClose.countedCash)} · Difference {money(daily.originalClose.countedCash-daily.originalClose.snapshot.expectedCash)}</p>{daily.revised&&<strong className="amber-text">Revised figures shown above. Original close is unchanged.</strong>}</div></div>}<div className="print-foot-official"><div className="dev-title">System Develop By : Dewmika Anusara</div><div className="dev-links"><a href="https://www.dew.pshycolab.com" target="_blank" rel="noreferrer">www.dew.pshycolab.com</a> | 0765496411</div><div className="owner-line">HG Saman Indika Wimalaratna · Authorized Distributor for Lakmee Export Lanka PVT LTD</div></div></section><div><section className="panel report-checks"><h2>Before you close</h2><AttentionRow icon={<Clock3 size={17}/>} title="Overdue balances" subtitle="Current balances due before report date" value={`${daily.overdueInvoices.length} invoices`} tone="red" onClick={()=>goto('shops')}/><AttentionRow icon={<Camera size={17}/>} title="Missing receipt photos" subtitle="Invoices recorded on this date" value={`${daily.missingPhotos.length} invoices`} tone="amber" onClick={()=>goto('shops')}/><AttentionRow icon={<RefreshCw size={17}/>} title="Awaiting sync" subtitle={mode==='demo'?'Demo records stay on this device':'Pending work on this device'} value={`${pendingCount} entries`} onClick={()=>ledgerStore.retrySync()}/></section>{daily.conflicts.length>0&&<section className="panel report-checks"><h2>Entries needing review</h2>{daily.conflicts.map(e=><div className="conflict-item" key={e.id}><b>{shopName(e.shopId)}</b><p>{derived.statuses[e.id]?.reason}</p><small>Submission retained · {operatorName(e.operatorId)}</small><button className="text-button" onClick={()=>openShop(e.shopId)}>Review shop ledger</button></div>)}</section>}{daily.corrections.length>0&&<section className="panel report-checks"><h2>Correction history</h2>{daily.corrections.map(e=><div className="conflict-item" key={e.id}><b>{shopName(e.shopId)}</b><p>{e.reason}</p><small>{formatDate(e.date,true)} · {operatorName(e.operatorId)} · revised invoice {money(e.total)}</small></div>)}</section>}<p className="report-hint"><ShieldCheck size={18}/>Closing the day preserves the original figures. Later corrections remain visible with a reason and operator.</p></div></div></>}
     {page==='settings'&&<SettingsPage settings={settings} updateSettings={updateSettings} mode={mode} identity={identity} onMode={switchMode} onEnroll={()=>setEnrolOpen(true)} onLock={()=>setOperator(null)} localPhotos={localPhotos} onPhotoChange={()=>setPhotoVersion(v=>v+1)} notify={notify} operator={operator} onInstall={()=>setInstallOpen(true)} onClearAll={async()=>{await ledgerStore.clearAllData();await clearPhotos(mode);setPhotoVersion(v=>v+1);notify('All ledger records and photos cleared.')}} onResetDemo={async()=>{await ledgerStore.resetDemo();notify('Demo sample records restored.')}} queue={ledgerStore.queue} onRetrySync={()=>ledgerStore.retrySync().catch(e=>notify(e.message))} onDismissQueueItem={async(id)=>{await ledgerStore.dismissQueueItem(id);notify('Queue item dismissed.');}}/>}
     </>}
     {ledgerStore.error&&<div className="notice error"><CircleAlert size={18}/><span>{ledgerStore.error}</span><button className="text-button" onClick={()=>ledgerStore.retrySync()}>Retry</button></div>}
@@ -150,15 +225,178 @@ function AttentionRow({icon,title,subtitle,value,tone='',onClick}:{icon:ReactNod
 function Activity({data,events,invoices,onShop,operatorName,statuses,onPhotos,onCorrect}:{data:LedgerData;events:LedgerEvent[];invoices:InvoiceView[];onShop:(id:string)=>void;operatorName:(id:OperatorId)=>string;statuses:ReturnType<typeof deriveLedger>['statuses'];onPhotos:(v:{ids:string[];title:string})=>void;onCorrect?:(inv:InvoiceView)=>void}){return <div className="activity-table"><div className="activity-table-header"><span>SHOP / ENTRY</span><span>AMOUNT</span><span>PAYMENT</span><span>BY</span><span className="activity-header-actions">ACTIONS</span></div>{[...events].reverse().map(e=>{const s=data.shops.find(s=>s.id===e.shopId)!;const inv=e.kind==='invoice'?invoices.find(i=>i.id===e.id):null;const sum=e.kind==='invoice'?(inv?.total??e.total):e.kind==='collection'?e.cash+e.cheques.reduce((s,c)=>s+c.amount,0):e.kind==='correction'?e.total:0;const photoIds=getEventPhotoIds(e);const chequeSum=(e.kind==='invoice'||e.kind==='collection')?e.cheques.reduce((s,c)=>s+c.amount,0):0;return <div className="activity-row" key={e.id}><button className="activity-shop" onClick={()=>onShop(e.shopId)}><span className={`entry-icon ${e.kind==='collection'?'green':''}`}>{e.kind==='collection'?<ArrowDownLeft size={18}/>:<FileText size={18}/>}</span><span><b>{s?.name||'Shop'}</b><small>{e.kind==='invoice'?e.reference:e.kind==='collection'?'Balance collection':e.kind==='correction'?'Invoice correction':`Cheque ${e.status}`}{inv?.corrections?.length?` · Rev. ${inv.corrections.length}`:''} <span className="metadata-dot">·</span> {new Date(e.createdAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Colombo'})}</small></span></button><strong className="table-amount">{sum?money(sum):'—'}</strong><div className="payment-badges">{statuses[e.id]?.status==='conflict'?<Badge tone="red">Needs attention</Badge>:e.kind==='invoice'||e.kind==='collection'?<>{(inv?.cash??e.cash)>0&&<Badge tone="green">Cash</Badge>}{chequeSum>0&&<Badge tone="blue">Cheque (Outstanding: {money(chequeSum)})</Badge>}{e.kind==='invoice'&&(inv?.credit??(e.total-e.cash-chequeSum))>0&&<Badge tone="amber">Credit</Badge>}</>:<Badge>{e.kind==='cheque-status'?e.status:'Corrected'}</Badge>}</div><span className={`operator-avatar ${e.operatorId==='brother'?'lavender':''}`} title={operatorName(e.operatorId)}>{initials(operatorName(e.operatorId))}</span><div className="activity-actions">{inv&&onCorrect&&<button className="icon-button edit-action" title={`Edit / correct invoice ${inv.reference}`} aria-label={`Edit invoice ${inv.reference}`} onClick={()=>onCorrect(inv)}><Pencil size={15}/></button>}<button className="icon-button photo-action" aria-label={e.kind==='invoice'?`View receipt & cheques for ${e.reference}`:'Open shop ledger'} title={e.kind==='invoice'?'View receipt & cheque photos':'Open shop ledger'} onClick={()=>e.kind==='invoice'?onPhotos({ids:photoIds,title:`${e.reference} photos`}):onShop(e.shopId)}><Camera size={16}/></button></div></div>})}{!events.length&&<Empty title="A clear page for the day" body="Record an invoice or collect an old balance to get started."/>}</div>}
 function ReportLine({label,amount,bold=false,tone=''}:{label:string;amount:number|null;bold?:boolean;tone?:string}){return <div className={`report-line ${bold?'bold':''} ${tone}`}><span>{label}</span><strong>{amount===null?'Not counted':money(amount)}</strong></div>}
 
+function Preloader({title,subtitle}:{title?:string;subtitle?:string}){
+ return <div className="preloader-overlay" role="status" aria-live="polite">
+  <div className="preloader-emblem-wrap">
+   <div className="preloader-orbital-outer"/>
+   <div className="preloader-orbital-inner"/>
+   <div className="preloader-center-crest"><BookOpen size={28}/></div>
+  </div>
+  <div className="preloader-title">{title||'Saman Indika Ledger'}</div>
+  <div className="preloader-subtitle">{subtitle||'Authorized Distributor · Lakmee Export Lanka PVT LTD'}</div>
+  <div className="preloader-status-badge">
+   <span className="preloader-dot-pulse"/>
+   <span>Verifying operator security &amp; loading ledger…</span>
+  </div>
+  <div className="preloader-developer-credit">
+   System Develop By : Dewmika Anusara · 0765496411
+  </div>
+ </div>;
+}
+
+interface RouteSummary {
+ name: string;
+ shopCount: number;
+ credit: number;
+ pendingCheques: number;
+ overdueInvoices: number;
+}
+
+function RoutesOverview({routes,selectedRoute,onSelectRoute}:{routes:RouteSummary[];selectedRoute:string;onSelectRoute:(r:string)=>void}){
+ if(!routes.length)return null;
+ const totalShops=routes.reduce((acc,r)=>acc+r.shopCount,0);
+ const totalCredit=routes.reduce((acc,r)=>acc+r.credit,0);
+ return <div className="routes-card-deck">
+  <button type="button" className={`route-card ${!selectedRoute?'selected':''}`} onClick={()=>onSelectRoute('')}>
+   <div className="route-card-top"><span className="route-card-title"><Route size={16}/> All routes</span><Badge tone="green">{totalShops} shops</Badge></div>
+   <div className="route-card-metrics"><span>Total outstanding</span><strong>{money(totalCredit)}</strong></div>
+  </button>
+  {routes.map(r=><button key={r.name} type="button" className={`route-card ${selectedRoute===r.name?'selected':''}`} onClick={()=>onSelectRoute(selectedRoute===r.name?'':r.name)}>
+   <div className="route-card-top"><span className="route-card-title"><MapPin size={15}/> {r.name}</span><Badge tone={r.credit>0?'amber':'neutral'}>{r.shopCount} shop{r.shopCount===1?'':'s'}</Badge></div>
+   <div className="route-card-metrics"><span>Credit: <strong>{money(r.credit)}</strong></span>{r.overdueInvoices>0&&<span className="red-text" style={{fontSize:'0.75rem'}}>({r.overdueInvoices} overdue)</span>}</div>
+  </button>)}
+ </div>;
+}
+
 function Login({mode,settings,hasIdentity,onUnlock,onDemo,onEnroll}:{mode:Mode;settings:typeof defaultSettings;hasIdentity:boolean;onUnlock:(id:OperatorId)=>void;onDemo:()=>void;onEnroll:()=>void}){
- const [profile,select]=useState<OperatorId|null>(null);
+ const [profile,select]=useState<OperatorId>(()=>'me');
  const [error,setError]=useState('');
+ const [bioSupported,setBioSupported]=useState(false);
+ const [bioEnrolled,setBioEnrolled]=useState(false);
+ const [enableBio,setEnableBio]=useState(false);
  const available=mode==='demo'||hasIdentity;
- return <div className="login"><div className="panel login-card"><div className="brand-mark"><BookOpen/></div><h1>Saman Indika Ledger</h1><p>Daily collections, credit &amp; cheques</p><p>Polonnaruwa, Sri Lanka</p>
- {available?<><div className="profile-options">{(['me','brother'] as const).map(id=><button key={id} className={`button ${profile===id?'primary':'secondary'}`} onClick={()=>{select(id);setError('')}}>{id==='me'?'Me':'Brother'} · {settings[id]}</button>)}</div>{profile&&<form key={profile} onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);const pin=String(f.get('pin'));try{if(hasPin(mode,profile)){const result=await verifyPin(mode,profile,pin);if(!result.ok)throw new Error(result.retryAfterSeconds?`Try again in ${result.retryAfterSeconds} seconds.`:'Incorrect PIN.')}else{if(pin!==f.get('confirm'))throw new Error('The PINs do not match.');await setPin(mode,profile,pin)}onUnlock(profile)}catch(e){setError((e as Error).message)}}}><Field label={hasPin(mode,profile)?'Personal six-digit PIN':'Create a personal six-digit PIN'}><input name="pin" autoFocus type="password" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required/></Field>{!hasPin(mode,profile)&&<Field label="Confirm PIN"><input name="confirm" type="password" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required/></Field>}<button className="button primary full">Unlock ledger</button></form>}</>:<p>This device needs owner enrolment.</p>}
- {error&&<p role="alert" className="error-text">{error}</p>}
- {!available&&<button className="button primary" onClick={onEnroll}>Enrol device</button>}{mode==='live'&&<button className="button ghost" onClick={onDemo}>Open demo</button>}
- <p className="muted">Owner · Saman Indika</p><p>Developed by <a href="https://dew.pshycolab.com">Dewmika Anusara</a></p></div></div>
+
+ useEffect(()=>{
+  isBiometricsAvailable().then(avail=>{
+   setBioSupported(avail);
+   if(avail)setBioEnrolled(isBiometricsEnrolled(mode,profile));
+  });
+ },[mode,profile]);
+
+ const handleBiometricUnlock=async()=>{
+  setError('');
+  try{
+   const verified=await verifyBiometrics(mode,profile);
+   if(verified)onUnlock(profile);
+   else throw new Error('Biometric verification cancelled.');
+  }catch(err){
+   setError((err as Error).message);
+  }
+ };
+
+ return <div className="premium-login-wrapper">
+  <div className="geo-shape-top-left" aria-hidden="true"/>
+  <div className="geo-shape-bottom-right" aria-hidden="true"/>
+  <div className="premium-login-frame">
+   <div className="login-card-header-accent">
+    <div className="login-card-corner-triangle" aria-hidden="true"/>
+    <span className="distributor-login-pill">Lakmee Export Lanka PVT LTD</span>
+    <h2 className="login-company-title">HG Saman Indika Wimalaratna</h2>
+    <p className="login-company-sub">Authorized Distributor · No 207/1, Palugasdamana, Polonnaruwa<br/>Contact : 0765496411</p>
+    <h1 className="login-main-heading">Login</h1>
+    <div className="login-heading-underline"/>
+   </div>
+
+   {available?(
+    <div className="login-inner-card">
+     <div className="operator-profile-tabs">
+      {(['me','brother'] as const).map(id=><button key={id} type="button" className={`operator-profile-btn ${profile===id?'active':''}`} onClick={()=>{select(id);setError('');}}>
+       <span className="avatar" style={{width:22,height:22,fontSize:'0.68rem',borderRadius:6}}>{initials(settings[id])}</span>
+       <span>{id==='me'?'Me':'Brother'} · {settings[id]}</span>
+      </button>)}
+     </div>
+
+     <form onSubmit={async e=>{
+      e.preventDefault();
+      const f=new FormData(e.currentTarget);
+      const pin=String(f.get('pin'));
+      try{
+       if(hasPin(mode,profile)){
+        const result=await verifyPin(mode,profile,pin);
+        if(!result.ok)throw new Error(result.retryAfterSeconds?('Try again in '+result.retryAfterSeconds+' seconds.'):'Incorrect PIN.');
+       }else{
+        if(pin!==f.get('confirm'))throw new Error('The PINs do not match.');
+        await setPin(mode,profile,pin);
+       }
+       if(bioSupported&&enableBio&&!bioEnrolled){
+        try{await registerBiometrics(mode,profile,settings[profile])}catch{}
+       }
+       onUnlock(profile);
+      }catch(err){
+       setError((err as Error).message);
+      }
+     }}>
+      <div className="luxury-input-group">
+       <label className="luxury-input-label">{hasPin(mode,profile)?'Security 6-digit PIN':'Create 6-digit PIN'}</label>
+       <div className="luxury-input-box">
+        <input name="pin" autoFocus type="password" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required placeholder="••••••"/>
+        <span className="luxury-input-icon"><LockKeyhole size={18}/></span>
+       </div>
+      </div>
+
+      {!hasPin(mode,profile)&&<div className="luxury-input-group" style={{marginTop:'10px'}}>
+       <label className="luxury-input-label">Confirm PIN</label>
+       <div className="luxury-input-box">
+        <input name="confirm" type="password" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required placeholder="••••••"/>
+        <span className="luxury-input-icon"><Check size={18}/></span>
+       </div>
+      </div>}
+
+      {bioSupported&&!bioEnrolled&&hasPin(mode,profile)&&<label className="check-field" style={{fontSize:'0.82rem',color:'#2b4438',margin:'10px 0 2px',cursor:'pointer',display:'flex',alignItems:'center',gap:'7px'}}>
+       <input type="checkbox" checked={enableBio} onChange={e=>setEnableBio(e.target.checked)}/>
+       <span>Enable Biometric / Fingerprint login on this phone</span>
+      </label>}
+
+      {error&&<p role="alert" className="error-text" style={{margin:'8px 0 0',fontSize:'0.85rem'}}>{error}</p>}
+
+      <button type="submit" className="luxury-primary-btn" style={{marginTop:'14px'}}>
+       <Shield size={17}/>
+       <span>Unlock Ledger</span>
+      </button>
+     </form>
+    </div>
+   ):(
+    <div className="login-inner-card" style={{textAlign:'center'}}>
+     <p style={{fontSize:'0.9rem',color:'#455b50',marginBottom:'14px'}}>This physical device requires owner device authorization before accessing live agency data.</p>
+     <button type="button" className="luxury-primary-btn" onClick={onEnroll}>
+      <Smartphone size={17}/>
+      <span>Enrol Device Token</span>
+     </button>
+    </div>
+   )}
+
+   {available&&bioSupported&&bioEnrolled&&(
+    <div className="biometric-auth-row">
+     <div className="or-auth-divider"><span>Or Biometric</span></div>
+     <button type="button" className="biometric-unlock-btn" onClick={handleBiometricUnlock}>
+      <Fingerprint size={20}/>
+      <span>Touch ID / Fingerprint / Face ID</span>
+     </button>
+    </div>
+   )}
+
+   <div style={{padding:'0 20px 10px',display:'flex',justifyContent:'center',gap:'10px'}}>
+    {mode==='live'&&<button type="button" className="button ghost" style={{fontSize:'0.82rem'}} onClick={onDemo}>Open offline demo workspace</button>}
+    {!available&&<button type="button" className="button ghost" style={{fontSize:'0.82rem'}} onClick={onEnroll}>Enrol token</button>}
+   </div>
+
+   <div className="login-dev-footer">
+    <div><b>System Develop By : Dewmika Anusara</b></div>
+    <div><a href="https://www.dew.pshycolab.com" target="_blank" rel="noreferrer">www.dew.pshycolab.com</a> | Contact : 0765496411</div>
+    <div style={{marginTop:'4px',fontSize:'0.7rem',color:'#76877e'}}>Authorized Distribution System · Lakmee Export Lanka PVT LTD</div>
+   </div>
+  </div>
+ </div>;
 }
 
 function Enroll({onClose,onDone}:{onClose:()=>void;onDone:()=>void}){
@@ -205,8 +443,8 @@ function LocalImage({id,mode,index}:{id:string;mode:Mode;index:number}){
 }
 
 function Cheques({cheques,data,onShop,onPhotos,onTransition}:{cheques:ChequeView[];data:LedgerData;onShop:(id:string)=>void;onPhotos:(p:{ids:string[];title:string})=>void;onTransition:(c:ChequeView,s:'deposited'|'cleared'|'returned')=>Promise<void>}){
- const [filter,setFilter]=useState('');const [search,setSearch]=useState('');const [busy,setBusy]=useState<string|null>(null);
- return <section className="panel cheque-panel"><div className="activity-toolbar"><label className="search-box"><Search size={17}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search shop, bank or cheque number" aria-label="Search cheques"/></label><select aria-label="Filter cheque status" value={filter} onChange={e=>setFilter(e.target.value)}><option value="">All statuses</option>{['received','deposited','cleared','returned'].map(s=><option key={s} value={s}>{s==='received'?'outstanding / received':s}</option>)}</select></div>{cheques.filter(c=>!filter||c.status===filter).filter(c=>[c.bank,c.number,data.shops.find(s=>s.id===c.shopId)?.name].join(' ').toLowerCase().includes(search.toLowerCase())).map(c=><article className="cheque-row" key={c.id}><div><button className="text-button" onClick={()=>onShop(c.shopId)}>{data.shops.find(s=>s.id===c.shopId)?.name}</button><h3>{c.bank} · {c.number}</h3><p>Cheque date {formatDate(c.date,true)} · Received {formatDate(c.receivedDate,true)}</p><details><summary>History &amp; allocations</summary>{c.history.map(h=><p key={h.eventId}>{formatDate(h.date,true)} · {h.status} · {h.operatorId==='me'?'Me':'Brother'}</p>)}{c.allocations.map(a=><p key={a.invoiceId}>{data.events.find(e=>e.id===a.invoiceId&&e.kind==='invoice')?.id===a.invoiceId?(data.events.find(e=>e.id===a.invoiceId) as import('./domain').InvoiceEvent).reference:a.invoiceId} · {money(a.amount)}</p>)}</details></div><div><strong>{money(c.amount)}</strong><Badge tone={c.status==='returned'?'red':c.status==='cleared'?'green':'amber'}>{c.status==='received'?(c.date<businessDate()?'Outstanding · Overdue to deposit':c.date===businessDate()?'Outstanding · Ready to deposit':('Outstanding · Due '+formatDate(c.date,true))):c.status}</Badge><div className="cheque-actions">{!!c.photoIds.length&&<button className="button ghost" onClick={()=>onPhotos({ids:c.photoIds,title:c.number})}><Camera size={16}/>Photo</button>}{(c.status==='received'||c.status==='deposited')&&<>{([c.status==='received'?'deposited':'cleared','returned'] as const).map(status=><button key={status} className="button secondary" disabled={busy===c.id} onClick={async()=>{if(status==='returned'&&!confirm('Mark this cheque returned and restore its invoice balances?'))return;setBusy(c.id);try{await onTransition(c,status)}finally{setBusy(null)}}}>Mark {status}</button>)}</>}</div></div></article>)}{!cheques.length&&<Empty title="No cheques recorded" body="Cheques appear here when you record an invoice or collection."/ >}</section>
+ const [filter,setFilter]=useState('');const [search,setSearch]=useState('');const [sort,setSort]=useState<'date-asc'|'amount-desc'|'bank'|'shop'>('date-asc');const [busy,setBusy]=useState<string|null>(null);
+ return <section className="panel cheque-panel"><div className="activity-toolbar"><label className="search-box"><Search size={17}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search shop, bank or cheque number" aria-label="Search cheques"/></label><select aria-label="Filter cheque status" value={filter} onChange={e=>setFilter(e.target.value)}><option value="">All statuses</option>{['received','deposited','cleared','returned'].map(s=><option key={s} value={s}>{s==='received'?'outstanding / received':s}</option>)}</select><div className="sort-select-chip"><ArrowUpDown size={14}/><select aria-label="Sort cheques" value={sort} onChange={e=>setSort(e.target.value as any)}><option value="date-asc">Due date: Soonest</option><option value="amount-desc">Amount: High to Low</option><option value="bank">Bank name</option><option value="shop">Shop (A-Z)</option></select></div></div>{cheques.filter(c=>!filter||c.status===filter).filter(c=>[c.bank,c.number,data.shops.find(s=>s.id===c.shopId)?.name].join(' ').toLowerCase().includes(search.toLowerCase())).sort((a,b)=>{if(sort==='amount-desc')return b.amount-a.amount;if(sort==='bank')return a.bank.localeCompare(b.bank);if(sort==='shop'){const sA=data.shops.find(s=>s.id===a.shopId)?.name||'';const sB=data.shops.find(s=>s.id===b.shopId)?.name||'';return sA.localeCompare(sB);}return a.date.localeCompare(b.date);}).map(c=><article className="cheque-row" key={c.id}><div><button className="text-button" onClick={()=>onShop(c.shopId)}>{data.shops.find(s=>s.id===c.shopId)?.name}</button><h3>{c.bank} · {c.number}</h3><p>Cheque date {formatDate(c.date,true)} · Received {formatDate(c.receivedDate,true)}</p><details><summary>History &amp; allocations</summary>{c.history.map(h=><p key={h.eventId}>{formatDate(h.date,true)} · {h.status} · {h.operatorId==='me'?'Me':'Brother'}</p>)}{c.allocations.map(a=><p key={a.invoiceId}>{data.events.find(e=>e.id===a.invoiceId&&e.kind==='invoice')?.id===a.invoiceId?(data.events.find(e=>e.id===a.invoiceId) as import('./domain').InvoiceEvent).reference:a.invoiceId} · {money(a.amount)}</p>)}</details></div><div><strong>{money(c.amount)}</strong><Badge tone={c.status==='returned'?'red':c.status==='cleared'?'green':'amber'}>{c.status==='received'?(c.date<businessDate()?'Outstanding · Overdue to deposit':c.date===businessDate()?'Outstanding · Ready to deposit':('Outstanding · Due '+formatDate(c.date,true))):c.status}</Badge><div className="cheque-actions">{!!c.photoIds.length&&<button className="button ghost" onClick={()=>onPhotos({ids:c.photoIds,title:c.number})}><Camera size={16}/>Photo</button>}{(c.status==='received'||c.status==='deposited')&&<>{([c.status==='received'?'deposited':'cleared','returned'] as const).map(status=><button key={status} className="button secondary" disabled={busy===c.id} onClick={async()=>{if(status==='returned'&&!confirm('Mark this cheque returned and restore its invoice balances?'))return;setBusy(c.id);try{await onTransition(c,status)}finally{setBusy(null)}}}>Mark {status}</button>)}</>}</div></div></article>)}{!cheques.length&&<Empty title="No cheques recorded" body="Cheques appear here when you record an invoice or collection."/ >}</section>
 }
 
 function CloseDay({data,date,route,filterOperator,operatorId,deviceId,onClose,onSave}:{data:LedgerData;date:string;route:string;filterOperator:string;operatorId:OperatorId;deviceId:string;onClose:()=>void;onSave:(close:ReturnType<typeof createDayClose>)=>Promise<void>}){

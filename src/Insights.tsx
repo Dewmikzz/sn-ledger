@@ -74,12 +74,23 @@ export function ThermalReport({report,agency,route,operator,warning}:{report:Dai
       </div>
       <style media="print">{`@page{margin:0} .thermal-slip{width:${width==='80'?72:48}mm}`}</style>
       <article className={`thermal-slip thermal-${width}`}>
-        <header><strong>Saman Indika Ledger</strong>{agency!=='Saman Indika Ledger'&&<div>{agency}</div>}<div>Daily collections report</div><div>{report.date} · Asia/Colombo</div></header>
+        <header>
+          <strong style={{fontSize:'1.05rem',display:'block'}}>HG Saman Indika Wimalaratna</strong>
+          <div style={{fontSize:'0.82rem',fontWeight:'bold'}}>Authorized Distributor for Lakmee Export Lanka PVT LTD</div>
+          <div style={{fontSize:'0.78rem'}}>No 207/1, Palugasdamana, Polonnaruwa</div>
+          <div style={{fontSize:'0.82rem',fontWeight:'bold'}}>Contact : 0765496411</div>
+          <div style={{margin:'6px 0 2px',borderTop:'1px dashed #000',paddingTop:'4px'}}><strong>{agency}</strong></div>
+          <div style={{fontSize:'0.8rem'}}>Daily collections report · {report.date}</div>
+        </header>
         <p>{route||'All routes'} · {operator||'Both operators'}</p>
         {warning&&<p>{warning}</p>}
         <dl>{rows.map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value===null?'—':money(value)}</dd></div>)}</dl>
         {report.originalClose&&<p>Original expected cash {money(report.originalClose.snapshot.expectedCash)}{report.revised?' · revised figures above':''}</p>}
-        <footer>{report.invoiceCount} invoices · {report.collectionCount} collections<br/>Polonnaruwa, Sri Lanka</footer>
+        <footer>
+          <div style={{marginBottom:'4px'}}>{report.invoiceCount} invoices · {report.collectionCount} collections</div>
+          <div style={{borderTop:'1px dashed #000',paddingTop:'4px',fontWeight:'bold'}}>System Develop By : Dewmika Anusara</div>
+          <div>www.dew.pshycolab.com | 0765496411</div>
+        </footer>
       </article>
     </div>
     <div className="modal-footer"><button className="button primary" onClick={()=>window.print()}><Printer size={17}/>Print thermal report</button></div>
