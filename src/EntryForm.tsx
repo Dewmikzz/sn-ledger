@@ -8,7 +8,7 @@ type PhotoDraft = { id: string; file: File };
 type ChequeDraft = { id: string; bank: string; number: string; amount: string; date: string; photos: PhotoDraft[] };
 export type EntryFormProps = {
   kind: 'invoice' | 'collection'; data: LedgerData; operatorId: OperatorId; deviceId: string; mode: Mode;
-  initialShopId?: string; onSave: (event: LedgerEvent) => Promise<void>; onSaveShop: (shop: Shop) => Promise<void>; onClose: () => void;
+  initialShopId?: string; initialDate?: string; onSave: (event: LedgerEvent) => Promise<void>; onSaveShop: (shop: Shop) => Promise<void>; onClose: () => void;
 };
 const uid = () => crypto.randomUUID();
 function minor(value: string): number {
@@ -58,8 +58,8 @@ function PhotoPicker({ photos, onChange, label = 'Receipt photos' }: { photos: P
   </div>;
 }
 
-export function EntryForm({ kind, data, operatorId, deviceId, mode, initialShopId, onSave, onSaveShop, onClose }: EntryFormProps) {
-  const [eventId] = useState(uid), [createdAt] = useState(() => new Date().toISOString()), [date, setDate] = useState(() => businessDate()), [shopId, setShopId] = useState(initialShopId || '');
+export function EntryForm({ kind, data, operatorId, deviceId, mode, initialShopId, initialDate, onSave, onSaveShop, onClose }: EntryFormProps) {
+  const [eventId] = useState(uid), [createdAt] = useState(() => new Date().toISOString()), [date, setDate] = useState(() => initialDate || businessDate()), [shopId, setShopId] = useState(initialShopId || '');
   const [query, setQuery] = useState(''), [showShops, setShowShops] = useState(!initialShopId), [quickShop, setQuickShop] = useState(false);
   const [shopName, setShopName] = useState(''), [shopOwner, setShopOwner] = useState(''), [shopPhone, setShopPhone] = useState(''), [shopVillage, setShopVillage] = useState(''), [shopRoute, setShopRoute] = useState(''), [shopLocation, setShopLocation] = useState(''), [shopBusy, setShopBusy] = useState(false);
   const [reference, setReference] = useState(''), [total, setTotal] = useState(''), [cash, setCash] = useState(''), [dueDate, setDueDate] = useState('');
@@ -70,7 +70,7 @@ export function EntryForm({ kind, data, operatorId, deviceId, mode, initialShopI
   const ledger = useMemo(() => deriveLedger(data), [data]);
   const shop = data.shops.find(s => s.id === shopId);
   const shops = useMemo(() => data.shops.filter(s => [s.name, s.phone, s.village, s.route].join(' ').toLowerCase().includes(query.toLowerCase())).slice(0, 8), [data.shops, query]);
-  const outstanding = ledger.invoices.filter(i => i.shopId === shopId && i.credit > 0).sort((a, b) => a.date.localeCompare(b.date));
+  const outstanding = ledger.invoices.filter(i => i.shopId === shopId && i.credit > 0 && i.date <= date).sort((a, b) => a.date.localeCompare(b.date));
   const invoiceMinor = quietMinor(total), cashMinor = quietMinor(cash), chequeMinor = cheques.reduce((sum, cheque) => sum + quietMinor(cheque.amount), 0);
   const paymentMinor = cashMinor + chequeMinor, creditMinor = invoiceMinor - paymentMinor;
   const outstandingMinor = outstanding.reduce((sum, invoice) => sum + invoice.credit, 0);
@@ -81,6 +81,10 @@ export function EntryForm({ kind, data, operatorId, deviceId, mode, initialShopI
   useEffect(() => { formRef.current?.querySelector<HTMLInputElement>('input:not([type=hidden]):not([hidden])')?.focus(); const previous = document.body.style.overflow; document.body.style.overflow = 'hidden'; return () => { document.body.style.overflow = previous; }; }, []);
   useEffect(() => { const handle = (event: KeyboardEvent) => { if (event.key === 'Escape' && !submitting.current) onClose(); }; window.addEventListener('keydown', handle); return () => window.removeEventListener('keydown', handle); }, [onClose]);
   function chooseShop(id: string) { setShopId(id); setShowShops(false); setAllocations({}); setError(''); }
+  function changeDate(next: string) {
+    setDate(next);
+    if (kind === 'collection') setAllocations({});
+  }
   function updateCheque(id: string, patch: Partial<ChequeDraft>) { setCheques(current => current.map(c => c.id === id ? { ...c, ...patch } : c)); }
   function allocateOldest() {
     let remaining = paymentMinor;
@@ -162,11 +166,17 @@ export function EntryForm({ kind, data, operatorId, deviceId, mode, initialShopI
   return <div className="modal-backdrop"><form ref={formRef} className="modal entry-modal" onKeyDown={event => { if (event.key !== 'Tab') return; const targets = Array.from(formRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled):not([hidden]), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]') || []).filter(el => el.getClientRects().length > 0); const first = targets[0], last = targets.at(-1); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); } }} onSubmit={save} role="dialog" aria-modal="true" aria-labelledby="entry-title" style={{ display: 'flex', flexDirection: 'column', maxHeight: '100dvh' }}>
     <header className="modal-header"><div><span className="eyebrow">{kind === 'invoice' ? 'NEW DELIVERY' : 'BALANCE COLLECTION'}</span><h2 id="entry-title">{kind === 'invoice' ? 'Record invoice' : 'Collect old balance'}</h2></div><button type="button" className="icon-button" onClick={onClose} disabled={busy} aria-label="Close entry"><X size={22}/></button></header>
     <div className="modal-body" style={{ overflowY: 'auto', minHeight: 0 }}>
+      <section className="entry-section">
+        <div className="field-grid">
+          <label className="field">{kind === 'invoice' ? 'Invoice date' : 'Collection date'}<input type="date" value={date} onChange={e => changeDate(e.target.value)} required/></label>
+          {kind === 'invoice' && <label className="field">Lakmee invoice reference<input autoComplete="off" value={reference} onChange={e => setReference(e.target.value)} placeholder="e.g. LK-1042" required/></label>}
+        </div>
+        {duplicate && <div className="notice error" role="alert">This invoice reference is already recorded. Check the shop ledger to avoid a duplicate.</div>}
+      </section>
       <section className="entry-section"><div className="section-label">Shop</div>{shop && !showShops ? <div className="selected-shop"><div><strong>{shop.name}</strong><p className="muted">{[shop.village, shop.route].filter(Boolean).join(' · ') || shop.phone || 'Shop selected'}</p></div><button type="button" className="button ghost" onClick={() => setShowShops(true)}>Change</button></div> : <><div className="search-field"><Search size={18}/><input aria-label="Search shops" autoComplete="off" placeholder="Shop, phone, village or route" value={query} onChange={e => setQuery(e.target.value)}/></div><div className="shop-options">{shops.map(s => <button type="button" key={s.id} onClick={() => chooseShop(s.id)} className="shop-option"><span><strong>{s.name}</strong><small>{[s.village, s.route, s.phone].filter(Boolean).join(' · ')}</small></span>{shopId === s.id && <Check size={18}/>}</button>)}{!shops.length && <p className="muted">No shops match this search.</p>}</div><button type="button" className="button ghost" onClick={() => { setQuickShop(!quickShop); if (query && !shopName) setShopName(query); }}><Plus size={17}/> Add a new shop</button></>}
       {quickShop && <div className="quick-shop"><h3>New shop</h3><div className="field-grid"><label className="field">Shop name<input value={shopName} onChange={e => setShopName(e.target.value)} autoComplete="organization"/></label><label className="field">Owner / contact<input value={shopOwner} onChange={e => setShopOwner(e.target.value)}/></label><label className="field">Phone<input type="tel" value={shopPhone} onChange={e => setShopPhone(e.target.value)}/></label><label className="field">Village<input value={shopVillage} onChange={e => setShopVillage(e.target.value)}/></label><label className="field">Route<input value={shopRoute} onChange={e => setShopRoute(e.target.value)}/></label><label className="field">Google Maps link or coordinates<input value={shopLocation} onChange={e => setShopLocation(e.target.value)} placeholder="e.g. https://www.google.com/maps/search/?api=1&query=8.0108287,81.0740409 or 8.0108287, 81.0740409"/></label></div><p className="field-help">You can add a storefront photo and notes from the shop ledger.</p><div style={{ display: 'flex', gap: 8 }}><button className="button primary" type="button" onClick={createShop} disabled={shopBusy}>{shopBusy ? 'Saving shop…' : 'Save shop'}</button><button className="button ghost" type="button" onClick={() => setQuickShop(false)}>Cancel</button></div></div>}
       </section>
-      <section className="entry-section"><div className="field-grid"><label className="field">{kind === 'invoice' ? 'Invoice date' : 'Collection date'}<input type="date" value={date} onChange={e => setDate(e.target.value)} required/></label>{kind === 'invoice' && <label className="field">Lakmee invoice reference<input autoComplete="off" value={reference} onChange={e => setReference(e.target.value)} placeholder="e.g. LK-1042" required/></label>}</div>
-      {duplicate && <div className="notice error" role="alert">This invoice reference is already recorded. Check the shop ledger to avoid a duplicate.</div>}
+      <section className="entry-section">
       {kind === 'invoice' ? <label className="field amount-field">Invoice total <span className="input-prefix"><span>Rs.</span><input aria-label="Invoice total" inputMode="decimal" placeholder="0.00" value={total} onChange={e => setTotal(e.target.value)} required/></span></label> : <div className="collection-balance"><span>Credit outstanding</span><strong>Rs. {rupees(outstandingMinor)}</strong></div>}
       </section>
       {kind === 'invoice' && <section className="entry-section"><PhotoPicker photos={photos} onChange={next => { setPhotos(next); setLegible(false); }}/>{hasImages ? <label className="check-field"><input type="checkbox" checked={legible} onChange={e => setLegible(e.target.checked)}/><span>I can read the invoice reference and all amounts.</span></label> : <div className="notice amber"><Camera size={17}/><span>You can save now. This invoice will show “Photo needed”.</span></div>}</section>}
