@@ -18,7 +18,11 @@ export interface CollectionEvent extends EventBase { kind: 'collection'; cash: n
 export interface ChequeStatusEvent extends EventBase { kind: 'cheque-status'; chequeId: string; status: Exclude<ChequeStatus, 'received'> }
 /** Revisions retain the original invoice and every later correction. Cheques are changed through their lifecycle. */
 export interface CorrectionEvent extends EventBase { kind: 'correction'; targetId: string; reason: string; total: number; cash: number }
-export type LedgerEvent = InvoiceEvent | CollectionEvent | ChequeStatusEvent | CorrectionEvent;
+export interface DailySalesEvent extends EventBase {
+  kind: 'daily-sales'; shopId: ''; total: number; previousId: string;
+}
+export type ShopLedgerEvent = InvoiceEvent | CollectionEvent | ChequeStatusEvent | CorrectionEvent;
+export type LedgerEvent = ShopLedgerEvent | DailySalesEvent;
 export interface ReportFigures {
   invoiceValue: number; newCredit: number; cashFromInvoices: number; cashFromCollections: number; expectedCash: number;
   chequesReceived: number; chequesDeposited: number; chequesCleared: number; chequesReturned: number;
@@ -41,12 +45,15 @@ export interface ChequeView extends ChequeInput {
 export interface EventDisposition { status: 'applied' | 'conflict'; reason?: string }
 export interface DerivedLedger {
   invoices: InvoiceView[]; cheques: ChequeView[]; statuses: Record<string, EventDisposition>; events: LedgerEvent[];
+  dailySales: Map<string, DailySalesEvent>;
   creditOutstanding: number; pendingCheques: number; totalCash: number;
 }
 export interface ReportFilters { route?: string; operatorId?: OperatorId }
 export interface DailyReport extends ReportFigures {
+  dailySales?: DailySalesEvent;
+  itemizedSales: number; salesCheques: number; salesTotalTooLow: boolean;
   date: string; invoiceCount: number; collectionCount: number; physicalCash: number | null; difference: number | null;
-  entries: LedgerEvent[]; overdueInvoices: InvoiceView[]; missingPhotos: InvoiceView[]; conflicts: LedgerEvent[];
+  entries: ShopLedgerEvent[]; overdueInvoices: InvoiceView[]; missingPhotos: InvoiceView[]; conflicts: LedgerEvent[];
   corrections: CorrectionEvent[]; originalClose?: DayClose; revised: boolean;
 }
 export const EMPTY_DATA: LedgerData = { shops: [], events: [], closes: [] };
@@ -86,11 +93,15 @@ function isDate(value: string): boolean { return /^\d{4}-\d{2}-\d{2}$/.test(valu
 function sum(values: number[]): number { const result = values.reduce((a, b) => a + b, 0); assertMoney(result); return result; }
 function text(value: unknown, name: string, max = 300): void { assert(typeof value === 'string' && value.trim().length > 0 && value.length <= max, `${name} is required and must be ${max} characters or fewer.`); }
 function validateBase(event: LedgerEvent, data: LedgerData): void {
-  text(event.id, 'Entry ID', 128); text(event.deviceId, 'Device ID', 128); text(event.shopId, 'Shop ID', 128);
+  text(event.id, 'Entry ID', 128); text(event.deviceId, 'Device ID', 128);
   assert(event.operatorId === 'me' || event.operatorId === 'brother', 'Choose an authorised operator.');
   assert(isDate(event.date), 'Choose a valid business date.');
   assert(!Number.isNaN(Date.parse(event.createdAt)), 'Entry timestamp is invalid.');
-  assert(data.shops.some(s => s.id === event.shopId), 'Select an existing shop.');
+  if (event.kind === 'daily-sales') assert(event.shopId === '' && event.operatorId === 'me', 'Daily sales require the owner and apply to the whole day.');
+  else {
+    text(event.shopId, 'Shop ID', 128);
+    assert(data.shops.some(s => s.id === event.shopId), 'Select an existing shop.');
+  }
 }
 function validatePhotos(ids: string[]): void { assert(Array.isArray(ids) && ids.length <= 5 && new Set(ids).size === ids.length, 'Use up to five distinct photos.'); ids.forEach(id => text(id, 'Photo ID', 128)); }
 function validateCheques(cheques: ChequeInput[], existing: Map<string, ChequeView>): void {
@@ -120,6 +131,7 @@ function addCheque(cheques: Map<string, ChequeView>, cheque: ChequeInput, event:
 /** Replays immutable events. Invalid/concurrent submissions remain visible and never partially alter balances. */
 export function deriveLedger(data: LedgerData): DerivedLedger {
   const invoices = new Map<string, InvoiceView>(); const cheques = new Map<string, ChequeView>();
+  const dailySales = new Map<string, DailySalesEvent>();
   const statuses: Record<string, EventDisposition> = Object.create(null); let totalCash = 0;
   const events = orderedEvents(data.events).filter((event, index, all) => all.findIndex(e => e.id === event.id) === index);
   for (const event of events) {
@@ -127,7 +139,11 @@ export function deriveLedger(data: LedgerData): DerivedLedger {
     if (event.disposition === 'conflict') { statuses[event.id] = { status: 'conflict', reason: event.conflictReason || 'Review this entry before applying it.' }; continue; }
     try {
       validateBase(event, data);
-      if (event.kind === 'invoice') {
+      if (event.kind === 'daily-sales') {
+        assertMoney(event.total);
+        assert(event.previousId === (dailySales.get(event.date)?.id ?? ''), 'The daily sales total changed on another device. Review the saved total before editing again.');
+        dailySales.set(event.date, event);
+      } else if (event.kind === 'invoice') {
         text(event.reference, 'Invoice reference', 100); assertMoney(event.total, true); assertMoney(event.cash); validateCheques(event.cheques, cheques);
         validatePhotos(event.photoIds);
         assert(![...invoices.values()].some(i => i.reference.trim().toLowerCase() === event.reference.trim().toLowerCase()), 'This invoice reference has already been recorded.');
@@ -179,7 +195,7 @@ export function deriveLedger(data: LedgerData): DerivedLedger {
       statuses[event.id] = { status: 'applied' };
     } catch (error) { statuses[event.id] = { status: 'conflict', reason: error instanceof Error ? error.message : 'Entry needs attention.' }; }
   }
-  return { invoices: [...invoices.values()], cheques: [...cheques.values()], statuses, events, creditOutstanding: sum([...invoices.values()].map(i => i.credit)), pendingCheques: sum([...invoices.values()].map(i => i.pendingCheques)), totalCash };
+  return { invoices: [...invoices.values()], cheques: [...cheques.values()], statuses, events, dailySales, creditOutstanding: sum([...invoices.values()].map(i => i.credit)), pendingCheques: sum([...invoices.values()].map(i => i.pendingCheques)), totalCash };
 }
 /** Strict local submission; imported concurrent events should be merged and replayed with deriveLedger. */
 export function validateAndAppend(data: LedgerData, event: LedgerEvent): LedgerData {
@@ -196,19 +212,27 @@ export function reportFigures(report: ReportFigures): ReportFigures {
   const { invoiceValue, newCredit, cashFromInvoices, cashFromCollections, expectedCash, chequesReceived, chequesDeposited, chequesCleared, chequesReturned } = report;
   return { invoiceValue, newCredit, cashFromInvoices, cashFromCollections, expectedCash, chequesReceived, chequesDeposited, chequesCleared, chequesReturned };
 }
+export function salesFigures(itemizedSales: number, itemizedCash: number, dailySales?: DailySalesEvent) {
+  const salesTotalTooLow = dailySales !== undefined && dailySales.total < itemizedSales;
+  const invoiceValue = dailySales && !salesTotalTooLow ? dailySales.total : itemizedSales;
+  return { invoiceValue, cashFromInvoices: invoiceValue - itemizedSales + itemizedCash, salesTotalTooLow };
+}
 export function buildReport(data: LedgerData, date: string, filters: ReportFilters = {}): DailyReport {
   const ledger = deriveLedger(data); const shops = new Map(data.shops.map(s => [s.id, s]));
   const match = (e: { shopId: string; operatorId: OperatorId }) => (!filters.route || shops.get(e.shopId)?.route === filters.route) && (!filters.operatorId || e.operatorId === filters.operatorId);
-  const entries = ledger.events.filter(e => e.date === date && match(e) && ledger.statuses[e.id]?.status === 'applied');
+  const entries = ledger.events.filter((e): e is ShopLedgerEvent => e.kind !== 'daily-sales' && e.date === date && match(e) && ledger.statuses[e.id]?.status === 'applied');
   const invoices = ledger.invoices.filter(i => i.date === date && match(i));
   const collections = entries.filter((e): e is CollectionEvent => e.kind === 'collection');
-  const cashFromInvoices = sum(invoices.map(i => i.cash)); const cashFromCollections = sum(collections.map(e => e.cash));
+  const itemizedSales = sum(invoices.map(i => i.total));
+  const dailySales = filters.route || filters.operatorId ? undefined : ledger.dailySales.get(date);
+  const { invoiceValue, cashFromInvoices, salesTotalTooLow } = salesFigures(itemizedSales, sum(invoices.map(i => i.cash)), dailySales);
+  const cashFromCollections = sum(collections.map(e => e.cash));
   const transitions = (status: ChequeStatus) => sum(ledger.cheques.flatMap(c => c.history.filter(h => h.status === status && h.date === date && match({ shopId: c.shopId, operatorId: h.operatorId })).map(() => c.amount)));
-  const figures: ReportFigures = { invoiceValue: sum(invoices.map(i => i.total)), newCredit: sum(invoices.map(i => i.initialCredit)), cashFromInvoices, cashFromCollections, expectedCash: sum([cashFromInvoices, cashFromCollections]), chequesReceived: transitions('received'), chequesDeposited: transitions('deposited'), chequesCleared: transitions('cleared'), chequesReturned: transitions('returned') };
+  const figures: ReportFigures = { invoiceValue, newCredit: sum(invoices.map(i => i.initialCredit)), cashFromInvoices, cashFromCollections, expectedCash: sum([cashFromInvoices, cashFromCollections]), chequesReceived: transitions('received'), chequesDeposited: transitions('deposited'), chequesCleared: transitions('cleared'), chequesReturned: transitions('returned') };
   const originalClose = data.closes.filter(c => c.date === date && (c.route || '') === (filters.route || '') && (c.filterOperatorId || '') === (filters.operatorId || '')).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
   const corrections = ledger.events.filter((e): e is CorrectionEvent => e.kind === 'correction' && ledger.statuses[e.id]?.status === 'applied' && match(e) && (e.date === date || ledger.invoices.find(i => i.id === e.targetId)?.date === date));
   // Current open balances are intentionally shown alongside a selected historical day's figures.
-  return { date, ...figures, invoiceCount: invoices.length, collectionCount: collections.length, physicalCash: originalClose?.countedCash ?? null, difference: originalClose ? originalClose.countedCash - figures.expectedCash : null,
+  return { date, ...figures, dailySales, itemizedSales, salesCheques: sum(invoices.map(i => i.chequeTotal)), salesTotalTooLow, invoiceCount: invoices.length, collectionCount: collections.length, physicalCash: originalClose?.countedCash ?? null, difference: originalClose ? originalClose.countedCash - figures.expectedCash : null,
     entries, overdueInvoices: ledger.invoices.filter(i => i.credit > 0 && i.dueDate && i.dueDate < date && match(i)), missingPhotos: invoices.filter(i => !i.photoIds.length),
     conflicts: ledger.events.filter(e => e.date === date && match(e) && ledger.statuses[e.id]?.status === 'conflict'), corrections, originalClose,
     revised: !!originalClose && (Object.keys(figures) as (keyof ReportFigures)[]).some(key => originalClose.snapshot[key] !== figures[key]) };
@@ -217,7 +241,9 @@ export const report = buildReport;
 export function createDayClose(data: LedgerData, input: Omit<DayClose, 'snapshot'>): DayClose {
   assertMoney(input.countedCash); assert(isDate(input.date), 'Choose a valid close date.');
   assert(!data.closes.some(c => c.date === input.date && (c.route || '') === (input.route || '') && (c.filterOperatorId || '') === (input.filterOperatorId || '')), 'This report already has an original close. It is retained permanently.');
-  return { ...input, snapshot: reportFigures(buildReport(data, input.date, { route: input.route, operatorId: input.filterOperatorId })) };
+  const daily = buildReport(data, input.date, { route: input.route, operatorId: input.filterOperatorId });
+  assert(!daily.salesTotalTooLow, 'Update the daily sales total before closing cash.');
+  return { ...input, snapshot: reportFigures(daily) };
 }
 /** Explicitly demo-only seed; never use it to initialise an enrolled live agency. */
 export function createDemoData(today = businessDate()): LedgerData {

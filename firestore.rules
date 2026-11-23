@@ -6,8 +6,9 @@ service cloud.firestore {
     // devices/{uid}: {active:bool,label:string,createdAt:timestamp,revokedAt?:timestamp};
     //   server/Admin SDK only. Each UID identifies a physical enrolled device.
     // events/{id}: immutable domain event + authUid:string, serverSequence:int,
-    //   disposition:'applied'|'conflict', conflictReason?:string. operatorId is a
-    //   local PIN-selected operator, NOT a separately authenticated identity.
+    //   disposition:'applied'|'conflict', conflictReason?:string. Daily sales
+    //   events carry total:int and previousId:string with an empty shopId.
+    //   operatorId identifies the recorded operator, not a Firebase identity.
     // sync/head: {sequence:int,lastEventId:string}, changed atomically with one
     //   newly created event. This serializes append operations across devices.
     // shops/{id}: validated shop profile with authUid and updatedAt audit fields.
@@ -37,8 +38,6 @@ service cloud.firestore {
       return value is list && value.size() <= 5
         && stringAt(value, 0) && stringAt(value, 1) && stringAt(value, 2)
         && stringAt(value, 3) && stringAt(value, 4);
-        
-        
     }
     function validCheque(data) {
       return data is map
@@ -86,7 +85,8 @@ service cloud.firestore {
     function validBase(data, eventId) {
       return data.keys().hasAll(['id','kind','date','createdAt','operatorId','deviceId',
           'shopId','authUid','serverSequence','disposition'])
-        && data.id == eventId && id(data.id) && id(data.shopId) && id(data.deviceId)
+        && data.id == eventId && id(data.id) && id(data.deviceId)
+        && (data.kind == 'daily-sales' ? data.shopId == '' : id(data.shopId))
         && data.authUid == request.auth.uid
         && day(data.date) && instant(data.createdAt)
         && data.operatorId in ['me','brother']
@@ -119,12 +119,20 @@ service cloud.firestore {
         && id(data.targetId) && text(data.reason, 1, 1000)
         && positiveMoney(data.total) && money(data.cash);
     }
+    // A whole-day sales revision is an immutable event without a shop.
+    function validDailySales(data) {
+      return data.keys().hasOnly(baseKeys().concat(['total','previousId']))
+        && data.keys().hasAll(['total','previousId'])
+        && data.operatorId == 'me' && money(data.total)
+        && (data.previousId == '' || id(data.previousId));
+    }
     function validEvent(data, eventId) {
       return validBase(data, eventId)
         && ((data.kind == 'invoice' && validInvoice(data))
           || (data.kind == 'collection' && validCollection(data))
           || (data.kind == 'cheque-status' && validChequeStatus(data))
-          || (data.kind == 'correction' && validCorrection(data)));
+          || (data.kind == 'correction' && validCorrection(data))
+          || (data.kind == 'daily-sales' && validDailySales(data)));
     }
     function appendMatchesHead(agency, data) {
       let before = get(/databases/$(database)/documents/agencies/$(agency)/sync/head).data;
@@ -143,12 +151,11 @@ service cloud.firestore {
     }
 
     function validShop(data, shopId) {
-      return data.keys().hasAll(['id','name','authUid'])
+      return data.keys().hasAll(['id','name','authUid','updatedAt'])
         && data.keys().hasOnly(['id','name','contact','phone','village','route','latitude',
           'longitude','photoIds','notes','createdAt','authUid','updatedAt'])
         && data.id == shopId && id(data.id) && text(data.name, 1, 120)
-        && data.authUid == request.auth.uid
-        && (!('updatedAt' in data) || instant(data.updatedAt))
+        && data.authUid == request.auth.uid && instant(data.updatedAt)
         && optionalText(data, 'contact', 120) && optionalText(data, 'phone', 40)
         && optionalText(data, 'village', 120) && optionalText(data, 'route', 120)
         && optionalText(data, 'notes', 2000)
@@ -207,7 +214,7 @@ service cloud.firestore {
         allow update: if enrolled(agency) && validShop(request.resource.data, shopId)
           && request.resource.data.id == resource.data.id
           && (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
-        allow delete: if enrolled(agency);
+        allow delete: if false;
       }
       match /closes/{closeId} {
         allow read: if enrolled(agency);

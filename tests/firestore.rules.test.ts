@@ -80,6 +80,27 @@ describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)('Firestore agency boundary
     await assertSucceeds(append(db, invoice()));
     await assertFails(updateDoc(doc(db, `${prefix}/sync/head`), { sequence: 2, lastEventId: 'invoice-a' }));
   });
+  it('accepts whole-day sales from enrolled devices and enforces the sales event schema', async () => {
+    const entry = { id: 'day-sales', kind: 'daily-sales', date: '2026-11-23', createdAt: timestamp,
+      operatorId: 'me', deviceId: 'local-a', shopId: '', authUid: 'phone-a', serverSequence: 1,
+      disposition: 'applied', total: 10_000_000, previousId: '' };
+    const db = member();
+    await assertFails(append(env.unauthenticatedContext().firestore(), entry));
+    await assertFails(append(member('revoked-phone'), { ...entry, authUid: 'revoked-phone' }));
+    await assertFails(append(db, { ...entry, authUid: 'phone-b' }));
+    await assertFails(append(db, { ...entry, operatorId: 'brother' }));
+    await assertFails(append(db, { ...entry, shopId: 'shop-a' }));
+    await assertFails(append(db, { ...entry, total: -1 }));
+    await assertFails(append(db, { ...entry, total: '1000' }));
+    await assertFails(append(db, { ...entry, total: 100_000_000_000 }));
+    await assertFails(append(db, { ...entry, previousId: '../other' }));
+    await assertFails(append(db, { ...entry, cash: 0 }));
+    await assertFails(setDoc(doc(db, `${prefix}/events/${entry.id}`), entry));
+    await assertSucceeds(append(db, entry));
+    const revision = { ...entry, id: 'day-sales-edit', authUid: 'phone-b', serverSequence: 2, previousId: entry.id, total: 11_000_000 };
+    await assertSucceeds(append(member('phone-b'), revision));
+    await assertFails(updateDoc(doc(db, `${prefix}/events/${entry.id}`), { total: 0 }));
+  });
   it('denies rewriting, deleting, or replaying immutable events', async () => {
     const db = member();
     await append(db, invoice());
