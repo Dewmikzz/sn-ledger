@@ -102,6 +102,14 @@ export async function listPhotos(mode: PhotoMode): Promise<PhotoRecord[]> {
   return (await (await db()).getAllFromIndex('photos', 'mode', mode)).map(withoutBlob).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 export async function removePhoto(id: string, mode: PhotoMode): Promise<void> { await (await db()).delete('photos', key(id, mode)); }
+export async function clearPhotos(mode: PhotoMode): Promise<void> {
+  assertMode(mode);
+  const database = await db();
+  const all = await database.getAllFromIndex('photos', 'mode', mode);
+  const tx = database.transaction('photos', 'readwrite');
+  for (const item of all) await tx.store.delete(item.key);
+  await tx.done;
+}
 
 export async function exportPhotos(mode: PhotoMode, selectedIds?: string[]): Promise<Blob> {
   assertMode(mode);

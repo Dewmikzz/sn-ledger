@@ -155,6 +155,9 @@ class LedgerController {
     if (this.mode !== 'demo') throw new Error('Live data cannot be reset from the app.');
     await this.mutate(row => { row.server = createDemoData(); row.queue = []; });
   }
+  async clearAllData() {
+    await this.mutate(row => { row.server = emptyData(); row.queue = []; });
+  }
   private startListeners() {
     if (!firestore || !this.identity) return;
     for (const name of ['shops', 'events', 'closes'] as const) {
@@ -314,6 +317,7 @@ export function useLedger(mode: LedgerMode) {
     closeDay: (close: DayClose) => current().closeDay(close),
     retrySync: () => current().retrySync(),
     resetDemo: () => current().resetDemo(),
+    clearAllData: () => current().clearAllData(),
     entryStatus: (id: string) => controller.current?.entryStatus(id) || 'local' as SyncStatus,
   };
 }
