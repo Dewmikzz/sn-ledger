@@ -6,9 +6,9 @@ describe('Responsive Layout Breakpoints (360px, 390px, 768px, 1024px, 1366px)', 
   const theme = readFileSync('src/theme.css', 'utf-8');
 
   it('contains dedicated breakpoints for mobile, tablet, and desktop', () => {
-    // 360px and 390px are handled by <= 650px (and <= 500px in theme)
+    // 360px and 390px use the compact two-column analytics layout.
     expect(styles).toContain('@media(max-width:650px)');
-    expect(theme).toContain('@media(max-width:500px)');
+    expect(theme).toContain('.dashboard-kpis {grid-template-columns:repeat(2,minmax(0,1fr))');
 
     // 768px is handled by <= 900px (tablet breakpoint)
     expect(styles).toContain('@media(max-width:900px)');
@@ -90,10 +90,10 @@ describe('Thermal and Standard Printing Styles', () => {
 
   it('configures exact 80mm (72mm printable) and 58mm (48mm printable) thermal roll widths', () => {
     expect(theme).toContain('.thermal-80 {width:72mm}');
-    expect(theme).toContain('.thermal-58 {width:48mm;font-size:8pt}');
+    expect(theme).toContain(".thermal-58,html[data-ledger-print='58'] .thermal-print-source .thermal-slip {width:48mm;font-size:9pt}");
     expect(theme).toContain('@media print{');
-    expect(theme).toContain('.app-shell:has(.thermal-slip) .thermal-options {display:none!important}');
-    expect(theme).toContain('.thermal-slip {margin:0}');
+    expect(theme).toContain('html[data-ledger-print] body>:not(.thermal-print-source) {display:none!important}');
+    expect(theme).toContain('.thermal-slip {margin:0 auto;color:#000}');
   });
 });
 

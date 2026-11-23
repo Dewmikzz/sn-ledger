@@ -1,5 +1,6 @@
 import {useMemo,useState} from 'react';
-import {BarChart3,Printer} from 'lucide-react';
+import {createPortal} from 'react-dom';
+import {Banknote,BarChart3,CalendarDays,ChartPie,ChevronDown,Printer,TrendingUp,Wallet} from 'lucide-react';
 import {businessDate,deriveLedger,money,addDays,salesFigures} from './domain';
 import type {DailyReport,LedgerData,OperatorId} from './domain';
 
@@ -45,38 +46,129 @@ export function summarizeSales(data:LedgerData,from:string,to:string,route:strin
   return {sales,cash,saleCash,salesCheques,newCredit,count,reviewDays,profit:estimateGrossProfit(sales),days};
 }
 
-export function Analytics({data,route,warning}:{data:LedgerData;route:string;warning:string}){
-  const [from,setFrom]=useState(()=>addDays(businessDate(),-6));
-  const [to,setTo]=useState(businessDate);
-  const valid=Boolean(from&&to&&from<=to);
-  const result=useMemo(()=>summarizeSales(data,from,to,route,''),[data,from,to,route]);
-  const max=Math.max(1,...result.days.map(([,d])=>d.sales));
-  return <div className="modal-body analytics">
-    <div className="field-grid">
-      <label className="field">From<input type="date" value={from} onChange={e=>setFrom(e.target.value)}/></label>
-      <label className="field">Through<input type="date" value={to} onChange={e=>setTo(e.target.value)}/></label>
-    </div>
-    <p>{route ? `${route} · Recorded invoices only` : 'All routes'} · Asia/Colombo</p>
-    {warning&&<p className="notice amber">{warning}</p>}
-    {!valid?<p role="alert">Choose a valid date range.</p>:<>
-      {result.reviewDays>0&&<p role="alert" className="notice amber">Review {result.reviewDays} daily sales total(s) below the recorded invoice value. Those days show recorded invoice figures.</p>}
-      <div className="analytics-kpis">
-        <div><span>Total sales</span><strong>{money(result.sales)}</strong><small>{result.count} itemized invoices</small></div>
-        <div><span>Estimated gross profit · 7%</span><strong>{money(result.profit)}</strong><small>Before operating expenses</small></div>
-        <div><span>Cash collected</span><strong>{money(result.cash)}</strong><small>Invoices and old balances</small></div>
-        <div><span>Cash from sales</span><strong>{money(result.saleCash)}</strong></div>
-        <div><span>Cheques from sales</span><strong>{money(result.salesCheques)}</strong></div>
-        <div><span>New credit</span><strong>{money(result.newCredit)}</strong></div>
-        <div><span>Old balances collected in cash</span><strong>{money(result.cash-result.saleCash)}</strong></div>
-      </div>
-      <h3><BarChart3 size={17}/> Daily sales</h3>
-      {result.days.length?<ul className="sales-bars">{result.days.map(([day,row])=><li key={day}><span>{day}</span><div className="sales-track" aria-hidden="true"><div style={{width:`${row.sales/max*100}%`}}/></div><strong>{money(row.sales)}</strong></li>)}</ul>:<p>No activity in this period.</p>}
-    </>}
-  </div>;
+const periods = [{days:1,label:'Day'},{days:7,label:'7 days'},{days:30,label:'30 days'},{days:0,label:'Custom'}] as const;
+
+function shortDate(date: string) {
+  return new Intl.DateTimeFormat('en-GB',{day:'numeric',month:'short',timeZone:'Asia/Colombo'}).format(new Date(date+'T12:00:00Z'));
 }
 
-export function ThermalReport({report,agency,route,warning}:{report:DailyReport;agency:string;route:string;warning:string}){
-  const [width,setWidth]=useState('80');
+export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:string;route:string;warning:string}){
+  const [period,setPeriod]=useState(7);
+  const [customFrom,setCustomFrom]=useState(()=>addDays(date,-6));
+  const [customTo,setCustomTo]=useState(date);
+  const from=period?addDays(date,1-period):customFrom;
+  const to=period?date:customTo;
+  const valid=Boolean(from&&to&&from<=to);
+  const result=useMemo(()=>summarizeSales(data,from,to,route,''),[data,from,to,route]);
+  const dayCount=valid?Math.round((Date.parse(to)-Date.parse(from))/86400000)+1:0;
+  const recordedSales=new Map(result.days.map(([day,figures])=>[day,figures.sales]));
+  const chartDays=dayCount<=31?Array.from({length:dayCount},(_,index)=>addDays(from,index)):result.days.map(([day])=>day);
+  const highest=chartDays.reduce((max,day)=>Math.max(max,recordedSales.get(day)??0),1);
+  const mix=[
+    {label:'Cash from sales',value:result.saleCash,color:'var(--dashboard-mint)'},
+    {label:'Cheques from sales',value:result.salesCheques,color:'var(--dashboard-orange)'},
+    {label:'New credit',value:result.newCredit,color:'var(--dashboard-slate)'},
+  ];
+  const cashAngle=result.sales?result.saleCash/result.sales*100:0;
+  const chequeAngle=result.sales?(result.saleCash+result.salesCheques)/result.sales*100:0;
+  const split=result.sales?`conic-gradient(var(--dashboard-mint) 0 ${cashAngle}%, var(--dashboard-orange) ${cashAngle}% ${chequeAngle}%, var(--dashboard-slate) ${chequeAngle}% 100%)`:undefined;
+
+  return <section className="sales-dashboard" aria-labelledby="sales-dashboard-title">
+    <div className="dashboard-heading">
+      <div>
+        <h2 id="sales-dashboard-title">Sales overview</h2>
+        <p>{valid?(from===to?shortDate(to):`${shortDate(from)} – ${shortDate(to)}`):'Select a date range'} · {route?`${route}, itemized sales`:'All routes'}</p>
+      </div>
+      <div className="dashboard-periods" role="group" aria-label="Dashboard period">
+        {periods.map(option=><button key={option.days} type="button" aria-pressed={period===option.days} onClick={()=>setPeriod(option.days)}>{option.label}{option.days===0&&<ChevronDown size={14}/>}</button>)}
+      </div>
+    </div>
+    {period===0&&<div className="dashboard-dates">
+      <label className="field">From<input type="date" value={customFrom} onChange={event=>setCustomFrom(event.target.value)}/></label>
+      <label className="field">Through<input type="date" value={customTo} onChange={event=>setCustomTo(event.target.value)}/></label>
+    </div>}
+    {!valid?<p role="alert">Choose a valid date range.</p>:<>
+      {warning&&<p className="dashboard-status"><span/>{warning}</p>}
+      {result.reviewDays>0&&<p role="alert" className="notice amber">{result.reviewDays} daily sales {result.reviewDays===1?'total needs':'totals need'} review. Those days show recorded invoice figures.</p>}
+      <div className="dashboard-kpis">
+        <div className="dashboard-kpi dashboard-kpi-sales"><span><span className="dashboard-icon"><TrendingUp size={17}/></span>Total sales</span><strong>{money(result.sales)}</strong><small>{result.count} itemized {result.count===1?'invoice':'invoices'}</small></div>
+        <div className="dashboard-kpi"><span><span className="dashboard-icon"><Wallet size={17}/></span>Cash collected</span><strong>{money(result.cash)}</strong><small>{money(result.cash-result.saleCash)} from old balances</small></div>
+        <div className="dashboard-kpi"><span><span className="dashboard-icon"><Banknote size={17}/></span>New credit</span><strong>{money(result.newCredit)}</strong><small>Credit issued in this period</small></div>
+        <div className="dashboard-kpi"><span><span className="dashboard-icon"><ChartPie size={17}/></span>Est. gross profit</span><strong>{money(result.profit)}</strong><small>7% of sales · before expenses</small></div>
+      </div>
+      <div className="dashboard-charts">
+        <section className="dashboard-panel">
+          <div className="dashboard-panel-heading"><div><h3>Sales trend</h3><p>Daily totals in LKR</p></div><span className="dashboard-icon"><BarChart3 size={18}/></span></div>
+          {result.sales>0?<div className="dashboard-trend" role="group" aria-label="Daily sales chart">
+            <div className="dashboard-scale" aria-hidden="true"><span>{money(highest)}</span><span>{money(Math.round(highest/2))}</span><span>0</span></div>
+            <div className="dashboard-plot">
+              <div className="dashboard-gridlines" aria-hidden="true"/>
+              <div className="dashboard-columns" style={{gridTemplateColumns:`repeat(${chartDays.length}, minmax(${chartDays.length>7?18:28}px, 1fr))`}}>
+                {chartDays.map((day,index)=>{
+                  const sale=recordedSales.get(day)??0;
+                  const showLabel=chartDays.length<=7||index%Math.ceil(chartDays.length/6)===0||index===chartDays.length-1;
+                  return <div className="dashboard-column" key={day}>
+                    <div className="dashboard-bar-slot" title={`${shortDate(day)} · ${money(sale)}`} aria-label={`${shortDate(day)}: ${money(sale)}`} role="img"><span className="dashboard-bar" style={{height:`${sale/highest*100}%`}}/></div>
+                    <span className="dashboard-tick" aria-hidden="true">{showLabel?shortDate(day):''}</span>
+                  </div>;
+                })}
+              </div>
+            </div>
+          </div>:<p className="dashboard-empty"><CalendarDays size={21}/>No sales recorded for these dates.</p>}
+        </section>
+        <section className="dashboard-panel">
+          <div className="dashboard-panel-heading"><div><h3>Sales breakdown</h3><p>Cash, cheques, and credit</p></div><span className="dashboard-icon"><ChartPie size={18}/></span></div>
+          <div className="dashboard-mix">
+            <div className="dashboard-donut" style={split?{background:split}:undefined} aria-hidden="true"><span>Sales</span></div>
+            <ul>{mix.map(item=><li key={item.label}><span style={{background:item.color}}/><span>{item.label}</span><strong>{money(item.value)}</strong></li>)}</ul>
+          </div>
+        </section>
+      </div>
+    </>}
+  </section>;
+}
+
+type RollWidth = '80' | '58';
+type ThermalProps = {report:DailyReport;agency:string;route:string;warning:string};
+
+export function printThermalReport(width:RollWidth='80'){
+  const source=document.querySelector<HTMLElement>('.thermal-print-source');
+  if(!source)return;
+  const root=document.documentElement;
+  root.dataset.ledgerPrint=width;
+  const heightMm=Math.ceil(source.getBoundingClientRect().height*25.4/96)+2;
+  const style=document.createElement('style');
+  style.media='print';
+  style.textContent=`@page { size: ${width}mm ${heightMm}mm; margin: 0; }`;
+  document.head.append(style);
+  const cleanup=()=>{
+    delete root.dataset.ledgerPrint;
+    style.remove();
+    window.removeEventListener('afterprint',cleanup);
+  };
+  window.addEventListener('afterprint',cleanup,{once:true});
+  try { window.print(); } catch(error) { cleanup(); throw error; }
+}
+
+export function ThermalPrintSource(props:ThermalProps){
+  return createPortal(<div className="thermal-print-source" aria-hidden="true"><ThermalSlip {...props} width="80"/></div>,document.body);
+}
+
+export function ThermalReport(props:ThermalProps){
+  const [width,setWidth]=useState<RollWidth>('80');
+  return <>
+    <div className="modal-body thermal-body">
+      <div className="thermal-options">
+        <label className="field">Paper roll<select value={width} onChange={event=>setWidth(event.target.value==='58'?'58':'80')}><option value="80">80 mm</option><option value="58">58 mm</option></select></label>
+        <p>In the print dialog, choose your printer and the matching roll size. Use 100% scale and turn off headers and footers if those controls are available.</p>
+      </div>
+      <ThermalSlip {...props} width={width}/>
+    </div>
+    <div className="modal-footer"><button className="button primary" onClick={()=>printThermalReport(width)}><Printer size={17}/>Print {width} mm</button></div>
+  </>;
+}
+
+function ThermalSlip({report,agency,route,warning,width}:ThermalProps&{width:RollWidth}){
   const rows:[string,number|null][]=[
     [report.dailySales&&!report.salesTotalTooLow?'Total sales':'Recorded invoice value',report.invoiceValue],['New credit',report.newCredit],
     ['Cash from sales',report.cashFromInvoices],['Cheques from sales',report.salesCheques],['Old balance cash',report.cashFromCollections],
@@ -85,16 +177,9 @@ export function ThermalReport({report,agency,route,warning}:{report:DailyReport;
     ['Cheques cleared',report.chequesCleared],['Cheques returned',report.chequesReturned],
     ['Est. gross profit (7%)',estimateGrossProfit(report.invoiceValue)]
   ];
-  return <>
-    <div className="modal-body thermal-body">
-      <div className="thermal-options">
-        <label className="field">Paper roll<select value={width} onChange={e=>setWidth(e.target.value)}><option value="80">80 mm</option><option value="58">58 mm</option></select></label>
-        <p>Pair the printer and enable its print service or driver. In the print dialog, select the printer and matching roll size. Turn off headers and footers if shown.</p>
-      </div>
-      <style media="print">{`@page{margin:0} .thermal-slip{width:${width==='80'?72:48}mm}`}</style>
-      <article className={`thermal-slip thermal-${width}`}>
+  return <article className={`thermal-slip thermal-${width}`}>
         <header>
-          <strong style={{fontSize:'1.05rem',display:'block'}}>HG Saman Indika Wimalaratna</strong>
+          <strong>HG Saman Indika Wimalaratna</strong>
           <div style={{fontSize:'0.82rem',fontWeight:'bold'}}>Authorized Distributor for Lakmee Export Lanka PVT LTD</div>
           <div style={{fontSize:'0.78rem'}}>No 207/1, Palugasdamana, Polonnaruwa</div>
           <div style={{fontSize:'0.82rem',fontWeight:'bold'}}>Contact : 0765496411</div>
@@ -108,11 +193,8 @@ export function ThermalReport({report,agency,route,warning}:{report:DailyReport;
         {report.originalClose&&<p>Original expected cash {money(report.originalClose.snapshot.expectedCash)}{report.revised?' · revised figures above':''}</p>}
         <footer>
           <div style={{marginBottom:'4px'}}>{report.invoiceCount} invoices · {report.collectionCount} collections</div>
-          <div style={{borderTop:'1px dashed #000',paddingTop:'4px',fontWeight:'bold'}}>System Develop By : Dewmika Anusara</div>
-          <div>www.dew.pshycolab.com | 0765496411</div>
+          <div style={{borderTop:'1px dashed #000',paddingTop:'4px',fontWeight:'bold'}}>System Developed By : Dewmika Anusara</div>
+          <div>www.dew.pshycolab.com | 0763107113</div>
         </footer>
-      </article>
-    </div>
-    <div className="modal-footer"><button className="button primary" onClick={()=>window.print()}><Printer size={17}/>Print thermal report</button></div>
-  </>;
+  </article>;
 }
