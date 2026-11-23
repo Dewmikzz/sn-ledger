@@ -6,7 +6,8 @@
  */
 import { parseArgs } from 'node:util';
 import { randomUUID } from 'node:crypto';
-import { initializeApp, applicationDefault } from 'firebase-admin/app';
+import { readFileSync, existsSync } from 'node:fs';
+import { initializeApp, applicationDefault, cert } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
@@ -40,7 +41,11 @@ const command = positionals[0];
 if (!['init', 'enroll', 'revoke', 'devices'].includes(command)) throw new Error('Unknown command. Use --help.');
 if (!values.agency || !/^[A-Za-z0-9_-]{1,80}$/.test(values.agency)) throw new Error('Provide --agency using 1–80 letters, digits, underscores, or hyphens.');
 if (!values.project) throw new Error('Provide --project with the Firebase project ID.');
-initializeApp({ credential: applicationDefault(), projectId: values.project });
+const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+const credential = credPath && existsSync(credPath)
+  ? cert(JSON.parse(readFileSync(credPath, 'utf8')))
+  : applicationDefault();
+initializeApp({ credential, projectId: values.project });
 const db = getFirestore();
 const auth = getAuth();
 const agency = db.doc(`agencies/${values.agency}`);
