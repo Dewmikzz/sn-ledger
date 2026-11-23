@@ -7,7 +7,8 @@ service cloud.firestore {
     //   PIN enrolment creates a membership with enrollment:'owner-pin'. Only the
     //   Admin SDK can modify or revoke an existing membership.
     // setup/window: public-to-signed-in setup ID and start time. setup/pinState:
-    //   private salted verifier, five-attempt budget and single-use claim state.
+    //   private salted verifier, attempt budget and three-device claim limit.
+    // setupAttempts/{uid}: private proof linked to one committed attempt.
     // events/{id}: immutable domain event + authUid:string, serverSequence:int,
     //   disposition:'applied'|'conflict', conflictReason?:string. Daily sales
     //   events carry total:int and previousId:string with an empty shopId.
@@ -52,36 +53,58 @@ service cloud.firestore {
     function pinStatePath(agency) {
       return /databases/$(database)/documents/agencies/$(agency)/setup/pinState;
     }
+    function pinAttemptPath(agency, uid) {
+      return /databases/$(database)/documents/agencies/$(agency)/setupAttempts/$(uid);
+    }
+    function pinNonce(value) {
+      return text(value, 32, 32) && value.matches('^[0-9a-f]+$');
+    }
     function hexDigest(value) {
       return text(value, 64, 64) && value.matches('^[0-9a-f]+$');
     }
     function validPinWindow(data) {
       return data.keys().hasOnly(['id','openedAt'])
-        && text(data.id, 32, 32) && data.id.matches('^[0-9a-f]+$')
+        && pinNonce(data.id)
         && data.openedAt == request.time;
     }
     function validNewPinState(data, windowId) {
-      return data.keys().hasOnly(['id','digest','attempts','lastUid','lastProof','closed'])
+      return data.keys().hasOnly(['id','digest','attempts','joined','lastUid','lastAttemptId'])
         && data.id == windowId && hexDigest(data.digest)
-        && data.attempts == 0 && data.lastUid == '' && data.lastProof == '' && data.closed == false;
+        && data.attempts is int && data.attempts == 0
+        && data.joined is int && data.joined == 0 && data.lastUid == '' && data.lastAttemptId == '';
     }
     function pinWindowOpen(agency, state) {
       let window = get(pinWindowPath(agency)).data;
-      return state.id == window.id && state.closed == false
+      return state.id == window.id && state.joined < 3
         && request.time < window.openedAt + duration.value(10, 'm');
+    }
+    function validPinAttemptData(attempt, state) {
+      return attempt.keys().hasOnly(['windowId','nonce','proof','attemptedAt'])
+        && attempt.windowId == state.id && attempt.nonce == state.lastAttemptId
+        && hexDigest(attempt.proof) && attempt.attemptedAt == request.time;
     }
     function validNewPinAttempt(agency, before, after) {
       return anonymousDevice() && !exists(devicePath(agency, request.auth.uid))
-        && pinWindowOpen(agency, before) && before.attempts < 5
-        && after.diff(before).affectedKeys().hasOnly(['attempts','lastUid','lastProof'])
-        && after.attempts == before.attempts + 1
-        && after.lastUid == request.auth.uid && hexDigest(after.lastProof);
+        && pinWindowOpen(agency, before) && before.attempts - before.joined < 5
+        && after.diff(before).affectedKeys().hasOnly(['attempts','lastUid','lastAttemptId'])
+        && after.attempts is int && after.attempts == before.attempts + 1
+        && after.lastUid == request.auth.uid && pinNonce(after.lastAttemptId)
+        && after.lastAttemptId != before.lastAttemptId
+        && validPinAttemptData(getAfter(pinAttemptPath(agency, request.auth.uid)).data, after);
     }
-    function validPinClaim(agency, before, after) {
+    function validPinClaim(agency, uid, before, after) {
+      let attempt = get(pinAttemptPath(agency, uid)).data;
       return anonymousDevice() && pinWindowOpen(agency, before)
-        && before.lastUid == request.auth.uid && before.lastProof == before.digest
-        && after.diff(before).affectedKeys().hasOnly(['closed','digest','lastProof'])
-        && after.closed == true && after.digest == '' && after.lastProof == '';
+        && attempt.windowId == before.id && attempt.proof == before.digest
+        && attempt.attemptedAt >= get(pinWindowPath(agency)).data.openedAt
+        && after.diff(before).affectedKeys().hasOnly(['joined'])
+        && after.joined is int && after.joined == before.joined + 1;
+    }
+    function attemptMatchesCounter(agency, uid, data) {
+      let before = get(pinStatePath(agency)).data;
+      let after = getAfter(pinStatePath(agency)).data;
+      return after.attempts == before.attempts + 1 && after.lastUid == uid
+        && validPinAttemptData(data, after);
     }
     function validPinMembership(data) {
       return data.keys().hasOnly(['active','label','createdAt','enrollment'])
@@ -253,7 +276,7 @@ service cloud.firestore {
           && (request.auth.token.get('agencyId', '') == agency || anonymousDevice());
         allow create: if signedIn() && request.auth.uid == uid
           && validPinMembership(request.resource.data)
-          && validPinClaim(agency, get(pinStatePath(agency)).data, getAfter(pinStatePath(agency)).data);
+          && validPinClaim(agency, uid, get(pinStatePath(agency)).data, getAfter(pinStatePath(agency)).data);
         allow list, update, delete: if false;
       }
       match /setup/window {
@@ -269,8 +292,14 @@ service cloud.firestore {
           && validNewPinState(request.resource.data, getAfter(pinWindowPath(agency)).data.id);
         allow update: if validNewPinAttempt(agency, resource.data, request.resource.data)
           || (signedIn() && !exists(devicePath(agency, request.auth.uid))
-            && validPinClaim(agency, resource.data, request.resource.data)
+            && validPinClaim(agency, request.auth.uid, resource.data, request.resource.data)
             && validPinMembership(getAfter(devicePath(agency, request.auth.uid)).data));
+      }
+      match /setupAttempts/{uid} {
+        allow read: if false;
+        allow create, update: if anonymousDevice() && request.auth.uid == uid
+          && attemptMatchesCounter(agency, uid, request.resource.data);
+        allow delete: if anonymousDevice() && request.auth.uid == uid;
       }
       match /events/{eventId} {
         allow read: if enrolled(agency);

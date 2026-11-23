@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { initializeTestEnvironment, assertFails, assertSucceeds, type RulesTestEnvironment } from '@firebase/rules-unit-testing';
 import { doc, getDoc, getDocFromServer, getDocs, collection, setDoc, updateDoc, deleteDoc, writeBatch, runTransaction, increment, serverTimestamp, Timestamp, type Firestore } from 'firebase/firestore';
@@ -18,18 +19,23 @@ const setupPath = `${prefix}/setup`;
 async function openSetup(db: Firestore) {
   const batch = writeBatch(db);
   batch.set(doc(db, `${setupPath}/window`), {id:windowId,openedAt:serverTimestamp()});
-  batch.set(doc(db, `${setupPath}/pinState`), {id:windowId,digest:correctProof,attempts:0,lastUid:'',lastProof:'',closed:false});
+  batch.set(doc(db, `${setupPath}/pinState`), {id:windowId,digest:correctProof,attempts:0,joined:0,lastUid:'',lastAttemptId:''});
   await batch.commit();
 }
 
 function attemptSetup(db: Firestore, uid: string, proof: string) {
-  return updateDoc(doc(db, `${setupPath}/pinState`), {id:windowId,attempts:increment(1),lastUid:uid,lastProof:proof});
+  const nonce = randomBytes(16).toString('hex');
+  const batch = writeBatch(db);
+  batch.update(doc(db, `${setupPath}/pinState`), {id:windowId,attempts:increment(1),lastUid:uid,lastAttemptId:nonce});
+  batch.set(doc(db, `${prefix}/setupAttempts/${uid}`), {windowId,nonce,proof,attemptedAt:serverTimestamp()});
+  return batch.commit();
 }
 
 function claimSetup(db: Firestore, uid: string) {
   const batch = writeBatch(db);
-  batch.update(doc(db, `${setupPath}/pinState`), {id:windowId,closed:true,digest:'',lastProof:''});
+  batch.update(doc(db, `${setupPath}/pinState`), {id:windowId,joined:increment(1)});
   batch.set(doc(db, `${prefix}/devices/${uid}`), {active:true,label:'Owner PIN device',createdAt:serverTimestamp(),enrollment:'owner-pin'});
+  batch.delete(doc(db, `${prefix}/setupAttempts/${uid}`));
   return batch.commit();
 }
 const invoice = (uid = 'phone-a', id = 'invoice-a', seq = 1) => ({
@@ -96,20 +102,34 @@ describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)('Firestore agency boundary
     await assertSucceeds(getDoc(doc(joining, `${setupPath}/window`)));
     await assertFails(getDoc(doc(joining, `${setupPath}/pinState`)));
     await assertFails(getDoc(doc(member(), `${setupPath}/pinState`)));
+    await assertFails(setDoc(doc(joining, `${prefix}/setupAttempts/new-phone`), {windowId,nonce:randomBytes(16).toString('hex'),proof:correctProof,attemptedAt:serverTimestamp()}));
     await assertFails(getDocs(collection(joining, `${prefix}/events`)));
     await assertFails(attemptSetup(joining, 'other-phone', correctProof));
     await assertFails(claimSetup(joining, 'new-phone'));
     await assertSucceeds(attemptSetup(joining, 'new-phone', wrongProof));
     await assertFails(claimSetup(joining, 'new-phone'));
     await assertSucceeds(attemptSetup(joining, 'new-phone', correctProof));
+    await assertFails(getDoc(doc(joining, `${prefix}/setupAttempts/new-phone`)));
     await assertFails(claimSetup(other, 'other-phone'));
     await assertSucceeds(claimSetup(joining, 'new-phone'));
     await assertSucceeds(getDocs(collection(joining, `${prefix}/events`)));
-    await assertFails(attemptSetup(other, 'other-phone', correctProof));
+    await assertFails(attemptSetup(joining, 'new-phone', correctProof));
     await assertFails(claimSetup(other, 'other-phone'));
     await assertFails(updateDoc(doc(joining, `${prefix}/devices/new-phone`), {active:false}));
     await env.withSecurityRulesDisabled(ctx => updateDoc(doc(ctx.firestore(), `${prefix}/devices/new-phone`), {active:false}));
     await assertFails(getDocs(collection(joining, `${prefix}/events`)));
+  });
+
+  it('admits three devices in a single window without replacing concurrent PIN attempts', async () => {
+    await assertSucceeds(openSetup(member()));
+    const ids=['pin-first','pin-second','pin-third','pin-fourth'];
+    const browsers=ids.map(setupDevice);
+    await Promise.all(ids.map((uid,index)=>assertSucceeds(attemptSetup(browsers[index],uid,correctProof))));
+    await Promise.all(ids.slice(0,3).map((uid,index)=>assertSucceeds(claimSetup(browsers[index],uid))));
+    await assertFails(claimSetup(browsers[3],ids[3]));
+    await assertFails(attemptSetup(browsers[3],ids[3],correctProof));
+    await assertFails(getDocs(collection(browsers[3], `${prefix}/events`)));
+    await Promise.all(browsers.slice(0,3).map(db=>assertSucceeds(getDocs(collection(db, `${prefix}/events`)))));
   });
 
   it('counts wrong PIN attempts across devices and denies reuse after ten minutes', async () => {

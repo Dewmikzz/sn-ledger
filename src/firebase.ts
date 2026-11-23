@@ -1,6 +1,6 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { browserLocalPersistence, connectAuthEmulator, getAuth, onAuthStateChanged, setPersistence, signInAnonymously, signInWithCustomToken, signOut } from 'firebase/auth';
-import { connectFirestoreEmulator, doc, getDocFromServer, getFirestore, increment, onSnapshot, serverTimestamp, updateDoc, writeBatch } from 'firebase/firestore';
+import { connectFirestoreEmulator, doc, getDocFromServer, getFirestore, increment, onSnapshot, serverTimestamp, writeBatch } from 'firebase/firestore';
 
 /** These are public Firebase web configuration values, never admin credentials. */
 const config = {
@@ -88,7 +88,7 @@ export async function openOwnerPinSetup(pin: string): Promise<void> {
   const batch = writeBatch(firestore);
   batch.set(doc(firestore, 'agencies', agencyId, 'setup', 'window'), { id: windowId, openedAt: serverTimestamp() });
   batch.set(doc(firestore, 'agencies', agencyId, 'setup', 'pinState'), {
-    id: windowId, digest, attempts: 0, lastUid: '', lastProof: '', closed: false,
+    id: windowId, digest, attempts: 0, joined: 0, lastUid: '', lastAttemptId: '',
   });
   await batch.commit();
 }
@@ -107,18 +107,24 @@ export async function enrollWithOwnerPin(pin: string): Promise<void> {
   }
   const proof = await pinProof(windowId, pin);
   const state = doc(firestore, 'agencies', agencyId, 'setup', 'pinState');
+  const attemptRef = doc(firestore, 'agencies', agencyId, 'setupAttempts', user.uid);
+  const nonce = toHex(crypto.getRandomValues(new Uint8Array(16)));
+  const attempt = writeBatch(firestore);
+  attempt.update(state, { id: windowId, attempts: increment(1), lastUid: user.uid, lastAttemptId: nonce });
+  attempt.set(attemptRef, { windowId, nonce, proof, attemptedAt: serverTimestamp() });
   try {
     // Even an incorrect PIN must commit an attempt before any claim can be checked.
-    await updateDoc(state, { id: windowId, attempts: increment(1), lastUid: user.uid, lastProof: proof });
+    await attempt.commit();
   } catch (error) {
     if ((error as { code?: string }).code === 'permission-denied') throw new Error('The setup window is closed. Open a new one on an enrolled device.');
     throw error;
   }
   const claim = writeBatch(firestore);
-  claim.update(state, { id: windowId, closed: true, digest: '', lastProof: '' });
+  claim.update(state, { id: windowId, joined: increment(1) });
   claim.set(doc(firestore, 'agencies', agencyId, 'devices', user.uid), {
     enrollment: 'owner-pin', label: 'Owner PIN device', active: true, createdAt: serverTimestamp(),
   });
+  claim.delete(attemptRef);
   try {
     await claim.commit();
   } catch (error) {

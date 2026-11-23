@@ -105,7 +105,7 @@ An unknown visitor cannot create an agency membership by selecting “Me” or �
 2. Enter that device's Owner PIN to open a 10-minute setup window.
 3. On the new phone, open the ledger, select **Set up your agency**, and enter the same PIN.
 
-The window closes when one phone joins, after five attempts, or when it expires. The new browser uses the same PIN for its local lock and gets its own revocable Firebase device identity. Firebase Anonymous Authentication must be enabled, with automatic deletion of anonymous accounts disabled. The Firestore rules grant ledger access only after a browser completes enrolment. The Owner PIN remains local for daily unlocks. Changing it on one enrolled device does not update the PIN on another.
+Use the same window for up to three new devices. The window expires after 10 minutes and allows up to five attempts that haven't completed enrolment. Each new browser uses the same PIN for its local lock and gets its own revocable Firebase device identity. Firebase Anonymous Authentication must be enabled, with automatic deletion of anonymous accounts disabled. The Firestore rules grant ledger access only after a browser completes enrolment. The Owner PIN remains local for daily unlocks. Changing it on one enrolled device does not update the PIN on another.
 
 ### Recovery token
 

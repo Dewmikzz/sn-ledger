@@ -447,8 +447,8 @@ function AddPhone({profile,onClose}:{profile:OperatorId;onClose:()=>void}){
  const [opened,setOpened]=useState(false);
  return <Modal title="Add a phone with Owner PIN" onClose={onClose}>
   {opened ? <div className="modal-body">
-   <p role="status">Setup is open for 10 minutes and closes after one phone joins.</p>
-   <p>On the new phone, go to the ledger, tap <strong>Set up your agency</strong>, and enter the same Owner PIN.</p>
+   <p role="status">Setup is open for 10 minutes. Up to three new devices can join with the same PIN.</p>
+   <p>On each new device, open the ledger, tap <strong>Set up your agency</strong>, and enter the same Owner PIN.</p>
   </div>:<ActionForm label="Open setup for 10 minutes" action={async form=>{
    const pin=String(form.get('pin'));
    const result=await verifyPin('live',profile,pin);
@@ -456,7 +456,7 @@ function AddPhone({profile,onClose}:{profile:OperatorId;onClose:()=>void}){
    await openOwnerPinSetup(pin);
    setOpened(true);
   }}>
-   <p className="muted">Enter your current Owner PIN to let one new phone join with the same PIN.</p>
+   <p className="muted">Enter your current Owner PIN to let up to three new devices join in the same setup window.</p>
    <Field label="Owner PIN"><input type="password" name="pin" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required autoComplete="current-password"/></Field>
   </ActionForm>}
  </Modal>
