@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { openDB, type IDBPDatabase } from 'idb';
-import { collection, doc, getDocsFromServer, getDocFromServer, onSnapshot, runTransaction, type Unsubscribe } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDocsFromServer, getDocFromServer, onSnapshot, runTransaction, type Unsubscribe } from 'firebase/firestore';
 import { createDemoData, deriveLedger, validateAndAppend, type DayClose, type LedgerData, type LedgerEvent, type Shop } from './domain';
 import { agencyId, configured, firebaseAuth, firebaseProjectId, firestore, getDeviceIdentity, watchDeviceIdentity, type DeviceIdentity } from './firebase';
 
@@ -128,12 +128,36 @@ class LedgerController {
   async saveShop(shop: Shop) {
     this.assertWritable();
     if (!shop.id || !shop.name.trim()) throw new Error('Give the shop a name.');
-    const stable = clean(shop);
+    const now = new Date().toISOString();
+    const stable: Shop = clean({ ...shop, createdAt: shop.createdAt || now, updatedAt: now });
     await this.mutate(row => {
       if (this.mode === 'demo') row.server.shops = [...row.server.shops.filter(s => s.id !== stable.id), stable];
-      else row.queue.push({ id: crypto.randomUUID(), kind: 'shop', value: stable, state: 'pending', attempts: 0, createdAt: new Date().toISOString() });
+      else {
+        row.queue = row.queue.filter(o => !(o.kind === 'shop' && o.value.id === stable.id));
+        row.queue.push({ id: crypto.randomUUID(), kind: 'shop', value: stable, state: 'pending', attempts: 0, createdAt: now });
+      }
     });
     void this.flush();
+  }
+  async deleteShop(shopId: string) {
+    this.assertWritable();
+    if (this.state.data.events.some(e => e.shopId === shopId)) {
+      throw new Error('Cannot delete a shop with existing ledger invoices or collections. You can rename or edit it.');
+    }
+    await this.mutate(row => {
+      row.server.shops = row.server.shops.filter(s => s.id !== shopId);
+      row.queue = row.queue.filter(o => !(o.kind === 'shop' && o.value.id === shopId));
+    });
+    if (this.mode === 'live' && firestore && this.identity) {
+      try {
+        await deleteDoc(doc(firestore, 'agencies', agencyId, 'shops', shopId));
+      } catch {}
+    }
+    this.publish(null);
+  }
+  async dismissQueueItem(id: string) {
+    await this.mutate(row => { row.queue = row.queue.filter(o => o.id !== id); });
+    this.publish(null);
   }
   async closeDay(close: DayClose) {
     this.assertWritable();
@@ -227,7 +251,10 @@ class LedgerController {
     }
     const name = operation.kind === 'shop' ? 'shops' : 'closes';
     const documentRef = doc(firestore, 'agencies', agencyId, name, operation.value.id);
-    const value = { ...operation.value, authUid: this.identity.uid };
+    const now = new Date().toISOString();
+    const value = operation.kind === 'shop'
+      ? { ...operation.value, createdAt: (operation.value as Shop).createdAt || now, updatedAt: now, authUid: this.identity.uid }
+      : { ...operation.value, authUid: this.identity.uid };
     await runTransaction(firestore, async transaction => {
       const existing = await transaction.get(documentRef);
       if (operation.kind === 'close' && existing.exists()) return;
@@ -314,6 +341,8 @@ export function useLedger(mode: LedgerMode) {
     ...state,
     submitEvent: (event: LedgerEvent) => current().submitEvent(event),
     saveShop: (shop: Shop) => current().saveShop(shop),
+    deleteShop: (shopId: string) => current().deleteShop(shopId),
+    dismissQueueItem: (id: string) => current().dismissQueueItem(id),
     closeDay: (close: DayClose) => current().closeDay(close),
     retrySync: () => current().retrySync(),
     resetDemo: () => current().resetDemo(),

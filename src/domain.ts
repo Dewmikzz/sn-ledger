@@ -3,7 +3,7 @@ export type OperatorId = 'me' | 'brother';
 export type ChequeStatus = 'received' | 'deposited' | 'cleared' | 'returned';
 export interface Shop {
   id: string; name: string; contact?: string; phone?: string; village?: string; route?: string;
-  latitude?: number; longitude?: number; photoIds?: string[]; notes?: string; createdAt?: string;
+  latitude?: number; longitude?: number; photoIds?: string[]; notes?: string; createdAt?: string; updatedAt?: string;
 }
 export interface ChequeInput { id: string; bank: string; number: string; amount: number; date: string; photoIds: string[] }
 export interface EventBase {
@@ -55,6 +55,18 @@ export function businessDate(value: Date | string | number = new Date()): string
   const date = value instanceof Date ? value : new Date(value);
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Colombo', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
   return ['year', 'month', 'day'].map(k => parts.find(p => p.type === k)!.value).join('-');
+}
+export function parseLocationInput(input: string): { latitude: number; longitude: number } | null {
+  const text = (input || '').trim();
+  if (!text) return null;
+  const m = text.match(/(?:query=|q=|@|^)\s*([+-]?\d{1,2}(?:\.\d+)?)[,\s]+([+-]?\d{1,3}(?:\.\d+)?)/i);
+  if (m) {
+    const lat = Number(m[1]), lng = Number(m[2]);
+    if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+      return { latitude: lat, longitude: lng };
+    }
+  }
+  return null;
 }
 export function addDays(date: string, days: number): string {
   const value = new Date(`${date}T12:00:00Z`); value.setUTCDate(value.getUTCDate() + days); return value.toISOString().slice(0, 10);

@@ -37,6 +37,8 @@ service cloud.firestore {
       return value is list && value.size() <= 5
         && stringAt(value, 0) && stringAt(value, 1) && stringAt(value, 2)
         && stringAt(value, 3) && stringAt(value, 4);
+        
+        
     }
     function validCheque(data) {
       return data is map
@@ -141,11 +143,12 @@ service cloud.firestore {
     }
 
     function validShop(data, shopId) {
-      return data.keys().hasAll(['id','name','authUid','updatedAt'])
+      return data.keys().hasAll(['id','name','authUid'])
         && data.keys().hasOnly(['id','name','contact','phone','village','route','latitude',
           'longitude','photoIds','notes','createdAt','authUid','updatedAt'])
         && data.id == shopId && id(data.id) && text(data.name, 1, 120)
-        && data.authUid == request.auth.uid && instant(data.updatedAt)
+        && data.authUid == request.auth.uid
+        && (!('updatedAt' in data) || instant(data.updatedAt))
         && optionalText(data, 'contact', 120) && optionalText(data, 'phone', 40)
         && optionalText(data, 'village', 120) && optionalText(data, 'route', 120)
         && optionalText(data, 'notes', 2000)
@@ -204,7 +207,7 @@ service cloud.firestore {
         allow update: if enrolled(agency) && validShop(request.resource.data, shopId)
           && request.resource.data.id == resource.data.id
           && (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
-        allow delete: if false;
+        allow delete: if enrolled(agency);
       }
       match /closes/{closeId} {
         allow read: if enrolled(agency);

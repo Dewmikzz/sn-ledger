@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Camera, Check, CheckCircle2, ImagePlus, Plus, RotateCcw, Search, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
-import { businessDate, deriveLedger, validateAndAppend, type LedgerData, type LedgerEvent, type OperatorId, type Shop } from './domain';
+import { businessDate, deriveLedger, parseLocationInput, validateAndAppend, type LedgerData, type LedgerEvent, type OperatorId, type Shop } from './domain';
 import { savePhoto } from './photos';
 
 type Mode = 'demo' | 'live';
@@ -61,7 +61,7 @@ function PhotoPicker({ photos, onChange, label = 'Receipt photos' }: { photos: P
 export function EntryForm({ kind, data, operatorId, deviceId, mode, initialShopId, onSave, onSaveShop, onClose }: EntryFormProps) {
   const [eventId] = useState(uid), [createdAt] = useState(() => new Date().toISOString()), [date, setDate] = useState(() => businessDate()), [shopId, setShopId] = useState(initialShopId || '');
   const [query, setQuery] = useState(''), [showShops, setShowShops] = useState(!initialShopId), [quickShop, setQuickShop] = useState(false);
-  const [shopName, setShopName] = useState(''), [shopOwner, setShopOwner] = useState(''), [shopPhone, setShopPhone] = useState(''), [shopVillage, setShopVillage] = useState(''), [shopRoute, setShopRoute] = useState(''), [shopBusy, setShopBusy] = useState(false);
+  const [shopName, setShopName] = useState(''), [shopOwner, setShopOwner] = useState(''), [shopPhone, setShopPhone] = useState(''), [shopVillage, setShopVillage] = useState(''), [shopRoute, setShopRoute] = useState(''), [shopLocation, setShopLocation] = useState(''), [shopBusy, setShopBusy] = useState(false);
   const [reference, setReference] = useState(''), [total, setTotal] = useState(''), [cash, setCash] = useState(''), [dueDate, setDueDate] = useState('');
   const [cheques, setCheques] = useState<ChequeDraft[]>([]), [photos, setPhotos] = useState<PhotoDraft[]>([]), [legible, setLegible] = useState(false);
   const [allocations, setAllocations] = useState<Record<string, string>>({});
@@ -92,7 +92,20 @@ export function EntryForm({ kind, data, operatorId, deviceId, mode, initialShopI
     if (!shopName.trim()) { setError('Enter the shop name.'); return; }
     setShopBusy(true); setError('');
     try {
-      const next: Shop = { id: uid(), name: shopName.trim(), contact: shopOwner.trim(), phone: shopPhone.trim(), village: shopVillage.trim(), route: shopRoute.trim(), notes: '' };
+      const loc = parseLocationInput(shopLocation);
+      const now = new Date().toISOString();
+      const next: Shop = {
+        id: uid(),
+        name: shopName.trim(),
+        contact: shopOwner.trim(),
+        phone: shopPhone.trim(),
+        village: shopVillage.trim(),
+        route: shopRoute.trim(),
+        notes: '',
+        ...(loc ? { latitude: loc.latitude, longitude: loc.longitude } : {}),
+        createdAt: now,
+        updatedAt: now
+      };
       await onSaveShop(next); chooseShop(next.id); setQuickShop(false); setQuery('');
     } catch (e) { setError(e instanceof Error ? e.message : 'The shop could not be saved. Please try again.'); } finally { setShopBusy(false); }
   }
@@ -150,7 +163,7 @@ export function EntryForm({ kind, data, operatorId, deviceId, mode, initialShopI
     <header className="modal-header"><div><span className="eyebrow">{kind === 'invoice' ? 'NEW DELIVERY' : 'BALANCE COLLECTION'}</span><h2 id="entry-title">{kind === 'invoice' ? 'Record invoice' : 'Collect old balance'}</h2></div><button type="button" className="icon-button" onClick={onClose} disabled={busy} aria-label="Close entry"><X size={22}/></button></header>
     <div className="modal-body" style={{ overflowY: 'auto', minHeight: 0 }}>
       <section className="entry-section"><div className="section-label">Shop</div>{shop && !showShops ? <div className="selected-shop"><div><strong>{shop.name}</strong><p className="muted">{[shop.village, shop.route].filter(Boolean).join(' · ') || shop.phone || 'Shop selected'}</p></div><button type="button" className="button ghost" onClick={() => setShowShops(true)}>Change</button></div> : <><div className="search-field"><Search size={18}/><input aria-label="Search shops" autoComplete="off" placeholder="Shop, phone, village or route" value={query} onChange={e => setQuery(e.target.value)}/></div><div className="shop-options">{shops.map(s => <button type="button" key={s.id} onClick={() => chooseShop(s.id)} className="shop-option"><span><strong>{s.name}</strong><small>{[s.village, s.route, s.phone].filter(Boolean).join(' · ')}</small></span>{shopId === s.id && <Check size={18}/>}</button>)}{!shops.length && <p className="muted">No shops match this search.</p>}</div><button type="button" className="button ghost" onClick={() => { setQuickShop(!quickShop); if (query && !shopName) setShopName(query); }}><Plus size={17}/> Add a new shop</button></>}
-      {quickShop && <div className="quick-shop"><h3>New shop</h3><div className="field-grid"><label className="field">Shop name<input value={shopName} onChange={e => setShopName(e.target.value)} autoComplete="organization"/></label><label className="field">Owner / contact<input value={shopOwner} onChange={e => setShopOwner(e.target.value)}/></label><label className="field">Phone<input type="tel" value={shopPhone} onChange={e => setShopPhone(e.target.value)}/></label><label className="field">Village<input value={shopVillage} onChange={e => setShopVillage(e.target.value)}/></label><label className="field">Route<input value={shopRoute} onChange={e => setShopRoute(e.target.value)}/></label></div><p className="field-help">You can add a map pin, storefront photo and notes from the shop ledger.</p><div style={{ display: 'flex', gap: 8 }}><button className="button primary" type="button" onClick={createShop} disabled={shopBusy}>{shopBusy ? 'Saving shop…' : 'Save shop'}</button><button className="button ghost" type="button" onClick={() => setQuickShop(false)}>Cancel</button></div></div>}
+      {quickShop && <div className="quick-shop"><h3>New shop</h3><div className="field-grid"><label className="field">Shop name<input value={shopName} onChange={e => setShopName(e.target.value)} autoComplete="organization"/></label><label className="field">Owner / contact<input value={shopOwner} onChange={e => setShopOwner(e.target.value)}/></label><label className="field">Phone<input type="tel" value={shopPhone} onChange={e => setShopPhone(e.target.value)}/></label><label className="field">Village<input value={shopVillage} onChange={e => setShopVillage(e.target.value)}/></label><label className="field">Route<input value={shopRoute} onChange={e => setShopRoute(e.target.value)}/></label><label className="field">Google Maps link or coordinates<input value={shopLocation} onChange={e => setShopLocation(e.target.value)} placeholder="e.g. https://www.google.com/maps/search/?api=1&query=8.0108287,81.0740409 or 8.0108287, 81.0740409"/></label></div><p className="field-help">You can add a storefront photo and notes from the shop ledger.</p><div style={{ display: 'flex', gap: 8 }}><button className="button primary" type="button" onClick={createShop} disabled={shopBusy}>{shopBusy ? 'Saving shop…' : 'Save shop'}</button><button className="button ghost" type="button" onClick={() => setQuickShop(false)}>Cancel</button></div></div>}
       </section>
       <section className="entry-section"><div className="field-grid"><label className="field">{kind === 'invoice' ? 'Invoice date' : 'Collection date'}<input type="date" value={date} onChange={e => setDate(e.target.value)} required/></label>{kind === 'invoice' && <label className="field">Lakmee invoice reference<input autoComplete="off" value={reference} onChange={e => setReference(e.target.value)} placeholder="e.g. LK-1042" required/></label>}</div>
       {duplicate && <div className="notice error" role="alert">This invoice reference is already recorded. Check the shop ledger to avoid a duplicate.</div>}
