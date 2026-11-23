@@ -1,6 +1,6 @@
 import { initializeApp, getApps } from 'firebase/app';
-import { browserLocalPersistence, connectAuthEmulator, getAuth, onAuthStateChanged, setPersistence, signInWithCustomToken, signOut } from 'firebase/auth';
-import { connectFirestoreEmulator, doc, getDocFromServer, getFirestore, onSnapshot } from 'firebase/firestore';
+import { browserLocalPersistence, connectAuthEmulator, getAuth, onAuthStateChanged, setPersistence, signInAnonymously, signInWithCustomToken, signOut } from 'firebase/auth';
+import { connectFirestoreEmulator, doc, getDocFromServer, getFirestore, increment, onSnapshot, serverTimestamp, updateDoc, writeBatch } from 'firebase/firestore';
 
 /** These are public Firebase web configuration values, never admin credentials. */
 const config = {
@@ -32,7 +32,7 @@ const trust = (uid: string): DeviceIdentity => {
 };
 const forgetTrust = () => localStorage.removeItem(trustedKey);
 
-/** Firebase identity authenticates the DEVICE. Me/Brother PINs only select a local operator. */
+/** The Firebase identity authenticates the device. The local PIN unlocks the screen. */
 export async function getDeviceIdentity(): Promise<DeviceIdentity | null> {
   if (!firebaseAuth || !firestore) return null;
   await firebaseAuth.authStateReady();
@@ -44,7 +44,7 @@ export async function getDeviceIdentity(): Promise<DeviceIdentity | null> {
     const membership = await getDocFromServer(doc(firestore, 'agencies', agencyId, 'devices', user.uid));
     if (membership.exists() && membership.data().active === true) return trust(user.uid);
     forgetTrust();
-    await signOut(firebaseAuth);
+    if (membership.exists() || !user.isAnonymous) await signOut(firebaseAuth);
     return null;
   } catch (error) {
     const code = (error as { code?: string }).code || '';
@@ -59,7 +59,7 @@ export async function getDeviceIdentity(): Promise<DeviceIdentity | null> {
   }
 }
 
-/** Only an owner-issued short-lived custom token can enrol a device. No public registration. */
+/** Recovery path for an owner-issued custom token. */
 export async function enrollDevice(token: string): Promise<DeviceIdentity> {
   if (!firebaseAuth || !firestore) throw new Error('Configure the Firebase project before enrolling a device.');
   if (!navigator.onLine) throw new Error('An internet connection is required for first-time device enrolment.');
@@ -69,6 +69,63 @@ export async function enrollDevice(token: string): Promise<DeviceIdentity> {
   const identity = await getDeviceIdentity();
   if (!identity) throw new Error('This device has not been authorised for this agency. Ask the owner to enable its device record.');
   return identity;
+}
+
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function pinProof(windowId: string, pin: string): Promise<string> {
+  if (!/^\d{6}$/.test(pin)) throw new Error('Enter your six-digit Owner PIN.');
+  const input = new TextEncoder().encode(`${windowId}:${pin}`);
+  return toHex(new Uint8Array(await crypto.subtle.digest('SHA-256', input)));
+}
+
+export async function openOwnerPinSetup(pin: string): Promise<void> {
+  if (!firestore || !navigator.onLine) throw new Error('Connect to the internet to add a phone.');
+  const windowId = toHex(crypto.getRandomValues(new Uint8Array(16)));
+  const digest = await pinProof(windowId, pin);
+  const batch = writeBatch(firestore);
+  batch.set(doc(firestore, 'agencies', agencyId, 'setup', 'window'), { id: windowId, openedAt: serverTimestamp() });
+  batch.set(doc(firestore, 'agencies', agencyId, 'setup', 'pinState'), {
+    id: windowId, digest, attempts: 0, lastUid: '', lastProof: '', closed: false,
+  });
+  await batch.commit();
+}
+
+export async function enrollWithOwnerPin(pin: string): Promise<void> {
+  if (!firebaseAuth || !firestore || !navigator.onLine) throw new Error('Connect to the internet to set up this phone.');
+  if (!/^\d{6}$/.test(pin)) throw new Error('Enter your six-digit Owner PIN.');
+  await firebaseAuth.authStateReady();
+  if (await getDeviceIdentity()) throw new Error('This browser is already set up. Open the live workspace and use your Owner PIN.');
+  await setPersistence(firebaseAuth, browserLocalPersistence);
+  const user = firebaseAuth.currentUser ?? (await signInAnonymously(firebaseAuth)).user;
+  const window = await getDocFromServer(doc(firestore, 'agencies', agencyId, 'setup', 'window'));
+  const windowId = window.get('id');
+  if (typeof windowId !== 'string' || !/^[0-9a-f]{32}$/.test(windowId)) {
+    throw new Error('On an enrolled device, open Settings → Add a phone with Owner PIN first.');
+  }
+  const proof = await pinProof(windowId, pin);
+  const state = doc(firestore, 'agencies', agencyId, 'setup', 'pinState');
+  try {
+    // Even an incorrect PIN must commit an attempt before any claim can be checked.
+    await updateDoc(state, { id: windowId, attempts: increment(1), lastUid: user.uid, lastProof: proof });
+  } catch (error) {
+    if ((error as { code?: string }).code === 'permission-denied') throw new Error('The setup window is closed. Open a new one on an enrolled device.');
+    throw error;
+  }
+  const claim = writeBatch(firestore);
+  claim.update(state, { id: windowId, closed: true, digest: '', lastProof: '' });
+  claim.set(doc(firestore, 'agencies', agencyId, 'devices', user.uid), {
+    enrollment: 'owner-pin', label: 'Owner PIN device', active: true, createdAt: serverTimestamp(),
+  });
+  try {
+    await claim.commit();
+  } catch (error) {
+    if ((error as { code?: string }).code === 'permission-denied') throw new Error('PIN did not match or the setup window changed. Check the PIN and try again.');
+    throw error;
+  }
+  trust(user.uid);
 }
 
 /** Removes cloud credentials; existing local receipts and queued records remain for owner recovery. */
@@ -94,6 +151,7 @@ export function watchDeviceIdentity(listener: (identity: DeviceIdentity | null, 
       }
       if (snapshot.exists() && snapshot.data().active === true) listener(trust(user.uid));
       else {
+        if (user.isAnonymous && !snapshot.exists()) { forgetTrust(); listener(null); return; }
         forgetTrust(); listener(null, 'This device has been revoked. Contact the owner.');
         void signOut(firebaseAuth!).catch(() => {});
       }

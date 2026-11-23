@@ -4,7 +4,10 @@ service cloud.firestore {
     // DATA MODEL — Standard Firestore, integer LKR minor units.
     // agencies/{agency}: owner-created metadata, readable by enrolled devices.
     // devices/{uid}: {active:bool,label:string,createdAt:timestamp,revokedAt?:timestamp};
-    //   server/Admin SDK only. Each UID identifies a physical enrolled device.
+    //   PIN enrolment creates a membership with enrollment:'owner-pin'. Only the
+    //   Admin SDK can modify or revoke an existing membership.
+    // setup/window: public-to-signed-in setup ID and start time. setup/pinState:
+    //   private salted verifier, five-attempt budget and single-use claim state.
     // events/{id}: immutable domain event + authUid:string, serverSequence:int,
     //   disposition:'applied'|'conflict', conflictReason?:string. Daily sales
     //   events carry total:int and previousId:string with an empty shopId.
@@ -15,14 +18,24 @@ service cloud.firestore {
     // closes/{id}: immutable first-close snapshot with authenticated device UID.
     // No derived financial balances are client-writable documents. The ledger
     // replays immutable sequenced events and independently rejects overpayments.
-    // Clients cannot enrol, modify membership, rewrite events, or delete history.
+    // Clients cannot modify memberships, rewrite events, or delete history.
 
     function signedIn() { return request.auth != null; }
+    function anonymousDevice() {
+      return signedIn() && request.auth.token.get('firebase', {}).get('sign_in_provider', '') == 'anonymous';
+    }
+    function devicePath(agency, uid) {
+      return /databases/$(database)/documents/agencies/$(agency)/devices/$(uid);
+    }
+    function validMembership(agency, membership) {
+      return membership.active == true
+        && (request.auth.token.get('agencyId', '') == agency
+          || (anonymousDevice() && membership.get('enrollment', '') == 'owner-pin'));
+    }
     function enrolled(agency) {
       return signedIn()
-        && request.auth.token.agencyId == agency
         && exists(/databases/$(database)/documents/agencies/$(agency))
-        && get(/databases/$(database)/documents/agencies/$(agency)/devices/$(request.auth.uid)).data.active == true;
+        && validMembership(agency, get(devicePath(agency, request.auth.uid)).data);
     }
     function text(value, minimum, maximum) {
       return value is string && value.size() >= minimum && value.size() <= maximum;
@@ -33,6 +46,48 @@ service cloud.firestore {
     function day(value) { return text(value, 10, 10) && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
     function instant(value) { return text(value, 20, 35) && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$'); }
     function optionalText(data, key, maximum) { return !(key in data) || text(data[key], 0, maximum); }
+    function pinWindowPath(agency) {
+      return /databases/$(database)/documents/agencies/$(agency)/setup/window;
+    }
+    function pinStatePath(agency) {
+      return /databases/$(database)/documents/agencies/$(agency)/setup/pinState;
+    }
+    function hexDigest(value) {
+      return text(value, 64, 64) && value.matches('^[0-9a-f]+$');
+    }
+    function validPinWindow(data) {
+      return data.keys().hasOnly(['id','openedAt'])
+        && text(data.id, 32, 32) && data.id.matches('^[0-9a-f]+$')
+        && data.openedAt == request.time;
+    }
+    function validNewPinState(data, windowId) {
+      return data.keys().hasOnly(['id','digest','attempts','lastUid','lastProof','closed'])
+        && data.id == windowId && hexDigest(data.digest)
+        && data.attempts == 0 && data.lastUid == '' && data.lastProof == '' && data.closed == false;
+    }
+    function pinWindowOpen(agency, state) {
+      let window = get(pinWindowPath(agency)).data;
+      return state.id == window.id && state.closed == false
+        && request.time < window.openedAt + duration.value(10, 'm');
+    }
+    function validNewPinAttempt(agency, before, after) {
+      return anonymousDevice() && !exists(devicePath(agency, request.auth.uid))
+        && pinWindowOpen(agency, before) && before.attempts < 5
+        && after.diff(before).affectedKeys().hasOnly(['attempts','lastUid','lastProof'])
+        && after.attempts == before.attempts + 1
+        && after.lastUid == request.auth.uid && hexDigest(after.lastProof);
+    }
+    function validPinClaim(agency, before, after) {
+      return anonymousDevice() && pinWindowOpen(agency, before)
+        && before.lastUid == request.auth.uid && before.lastProof == before.digest
+        && after.diff(before).affectedKeys().hasOnly(['closed','digest','lastProof'])
+        && after.closed == true && after.digest == '' && after.lastProof == '';
+    }
+    function validPinMembership(data) {
+      return data.keys().hasOnly(['active','label','createdAt','enrollment'])
+        && data.active == true && data.label == 'Owner PIN device'
+        && data.createdAt == request.time && data.enrollment == 'owner-pin';
+    }
     function stringAt(list, index) { return list.size() <= index || id(list[index]); }
     function photoIds(value) {
       return value is list && value.size() <= 5
@@ -194,8 +249,28 @@ service cloud.firestore {
       allow write: if false;
       match /devices/{uid} {
         // Read own membership for enrolment and revocation detection only.
-        allow read: if signedIn() && request.auth.uid == uid && request.auth.token.agencyId == agency;
-        allow write: if false;
+        allow get: if signedIn() && request.auth.uid == uid
+          && (request.auth.token.get('agencyId', '') == agency || anonymousDevice());
+        allow create: if signedIn() && request.auth.uid == uid
+          && validPinMembership(request.resource.data)
+          && validPinClaim(agency, get(pinStatePath(agency)).data, getAfter(pinStatePath(agency)).data);
+        allow list, update, delete: if false;
+      }
+      match /setup/window {
+        allow get: if signedIn();
+        allow create, update: if enrolled(agency) && validPinWindow(request.resource.data)
+          && validNewPinState(getAfter(pinStatePath(agency)).data, request.resource.data.id);
+        allow list, delete: if false;
+      }
+      match /setup/pinState {
+        allow read, delete: if false;
+        allow create, update: if enrolled(agency)
+          && validPinWindow(getAfter(pinWindowPath(agency)).data)
+          && validNewPinState(request.resource.data, getAfter(pinWindowPath(agency)).data.id);
+        allow update: if validNewPinAttempt(agency, resource.data, request.resource.data)
+          || (signedIn() && !exists(devicePath(agency, request.auth.uid))
+            && validPinClaim(agency, resource.data, request.resource.data)
+            && validPinMembership(getAfter(devicePath(agency, request.auth.uid)).data));
       }
       match /events/{eventId} {
         allow read: if enrolled(agency);

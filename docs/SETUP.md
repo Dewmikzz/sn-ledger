@@ -99,7 +99,17 @@ On the phone:
 
 An unknown visitor cannot create an agency membership by selecting “Me” or “Brother”. Device memberships are written by the owner’s Admin script. Demo mode stays separate from the live agency.
 
-## 5. Add your brother or another trusted device
+## 5. Add another phone with the Owner PIN
+
+1. Unlock an enrolled device and open **Settings → Add a phone with Owner PIN**.
+2. Enter that device's Owner PIN to open a 10-minute setup window.
+3. On the new phone, open the ledger, select **Set up your agency**, and enter the same PIN.
+
+The window closes when one phone joins, after five attempts, or when it expires. The new browser uses the same PIN for its local lock and gets its own revocable Firebase device identity. Firebase Anonymous Authentication must be enabled, with automatic deletion of anonymous accounts disabled. The Firestore rules grant ledger access only after a browser completes enrolment. The Owner PIN remains local for daily unlocks. Changing it on one enrolled device does not update the PIN on another.
+
+### Recovery token
+
+If none of the enrolled devices are available, the Firebase administrator can issue a recovery token. The recovery option is available on the device setup screen.
 
 Run `enroll` again with a distinct device label, for example:
 

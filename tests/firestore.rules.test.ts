@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { initializeTestEnvironment, assertFails, assertSucceeds, type RulesTestEnvironment } from '@firebase/rules-unit-testing';
-import { doc, getDoc, getDocFromServer, getDocs, collection, setDoc, updateDoc, deleteDoc, writeBatch, runTransaction, type Firestore } from 'firebase/firestore';
+import { doc, getDoc, getDocFromServer, getDocs, collection, setDoc, updateDoc, deleteDoc, writeBatch, runTransaction, increment, serverTimestamp, Timestamp, type Firestore } from 'firebase/firestore';
 
 const projectId = 'demo-si-ledger';
 const agency = 'saman-indika';
@@ -9,6 +9,29 @@ const prefix = `agencies/${agency}`;
 const timestamp = '2026-11-23T04:30:00.000Z';
 let env: RulesTestEnvironment;
 const member = (uid = 'phone-a', agencyId = agency) => env.authenticatedContext(uid, { agencyId }).firestore();
+const setupDevice = (uid: string) => env.authenticatedContext(uid, {firebase:{sign_in_provider:'anonymous'}}).firestore();
+const windowId = 'a'.repeat(32);
+const correctProof = 'b'.repeat(64);
+const wrongProof = 'c'.repeat(64);
+const setupPath = `${prefix}/setup`;
+
+async function openSetup(db: Firestore) {
+  const batch = writeBatch(db);
+  batch.set(doc(db, `${setupPath}/window`), {id:windowId,openedAt:serverTimestamp()});
+  batch.set(doc(db, `${setupPath}/pinState`), {id:windowId,digest:correctProof,attempts:0,lastUid:'',lastProof:'',closed:false});
+  await batch.commit();
+}
+
+function attemptSetup(db: Firestore, uid: string, proof: string) {
+  return updateDoc(doc(db, `${setupPath}/pinState`), {id:windowId,attempts:increment(1),lastUid:uid,lastProof:proof});
+}
+
+function claimSetup(db: Firestore, uid: string) {
+  const batch = writeBatch(db);
+  batch.update(doc(db, `${setupPath}/pinState`), {id:windowId,closed:true,digest:'',lastProof:''});
+  batch.set(doc(db, `${prefix}/devices/${uid}`), {active:true,label:'Owner PIN device',createdAt:serverTimestamp(),enrollment:'owner-pin'});
+  return batch.commit();
+}
 const invoice = (uid = 'phone-a', id = 'invoice-a', seq = 1) => ({
   id, kind: 'invoice', date: '2026-11-23', createdAt: timestamp,
   operatorId: 'me', deviceId: 'local-phone-a', shopId: 'shop-a', authUid: uid,
@@ -64,6 +87,46 @@ describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)('Firestore agency boundary
     await assertFails(deleteDoc(doc(db, `${prefix}/devices/phone-b`)));
     await assertSucceeds(getDoc(doc(db, `${prefix}/devices/phone-a`)));
     await assertFails(getDoc(doc(db, `${prefix}/devices/phone-b`)));
+  });
+  it('keeps the PIN verifier private and enrols only the browser with the correct committed attempt', async () => {
+    const joining = setupDevice('new-phone');
+    const other = setupDevice('other-phone');
+    await assertFails(openSetup(joining));
+    await assertSucceeds(openSetup(member()));
+    await assertSucceeds(getDoc(doc(joining, `${setupPath}/window`)));
+    await assertFails(getDoc(doc(joining, `${setupPath}/pinState`)));
+    await assertFails(getDoc(doc(member(), `${setupPath}/pinState`)));
+    await assertFails(getDocs(collection(joining, `${prefix}/events`)));
+    await assertFails(attemptSetup(joining, 'other-phone', correctProof));
+    await assertFails(claimSetup(joining, 'new-phone'));
+    await assertSucceeds(attemptSetup(joining, 'new-phone', wrongProof));
+    await assertFails(claimSetup(joining, 'new-phone'));
+    await assertSucceeds(attemptSetup(joining, 'new-phone', correctProof));
+    await assertFails(claimSetup(other, 'other-phone'));
+    await assertSucceeds(claimSetup(joining, 'new-phone'));
+    await assertSucceeds(getDocs(collection(joining, `${prefix}/events`)));
+    await assertFails(attemptSetup(other, 'other-phone', correctProof));
+    await assertFails(claimSetup(other, 'other-phone'));
+    await assertFails(updateDoc(doc(joining, `${prefix}/devices/new-phone`), {active:false}));
+    await env.withSecurityRulesDisabled(ctx => updateDoc(doc(ctx.firestore(), `${prefix}/devices/new-phone`), {active:false}));
+    await assertFails(getDocs(collection(joining, `${prefix}/events`)));
+  });
+
+  it('counts wrong PIN attempts across devices and denies reuse after ten minutes', async () => {
+    const first = setupDevice('new-phone');
+    const second = setupDevice('other-phone');
+    await assertSucceeds(openSetup(member()));
+    for (let index=0;index<5;index++) {
+      await assertSucceeds(attemptSetup(index%2===0?first:second,index%2===0?'new-phone':'other-phone',wrongProof));
+    }
+    await assertFails(attemptSetup(second, 'other-phone', correctProof));
+    await assertSucceeds(openSetup(member()));
+    await assertSucceeds(attemptSetup(first, 'new-phone', correctProof));
+    await env.withSecurityRulesDisabled(ctx => updateDoc(doc(ctx.firestore(), `${setupPath}/window`), {
+      openedAt:Timestamp.fromMillis(Date.now()-11*60*1000),
+    }));
+    await assertFails(claimSetup(first, 'new-phone'));
+    await assertFails(attemptSetup(second, 'other-phone', correctProof));
   });
   it('allows both enrolled devices to read agency data and append independently', async () => {
     await assertSucceeds(append(member(), invoice()));
