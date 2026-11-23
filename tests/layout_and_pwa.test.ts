@@ -96,3 +96,24 @@ describe('Thermal and Standard Printing Styles', () => {
     expect(theme).toContain('.thermal-slip {margin:0}');
   });
 });
+
+describe('App Component Rendering', () => {
+  it('renders App cleanly without throwing in browser environment', async () => {
+    const store = new Map<string, string>();
+    const storageMock = {
+      getItem: (k: string) => store.get(k) || null,
+      setItem: (k: string, v: string) => store.set(k, v),
+      removeItem: (k: string) => store.delete(k),
+      clear: () => store.clear()
+    };
+    Object.defineProperty(globalThis, 'localStorage', { value: storageMock, configurable: true, writable: true });
+    Object.defineProperty(globalThis, 'sessionStorage', { value: storageMock, configurable: true, writable: true });
+    const React = await import('react');
+    const { renderToString } = await import('react-dom/server');
+    const App = (await import('../src/App')).default;
+    const html = renderToString(React.createElement(App));
+    expect(html).toBeTruthy();
+    expect(html).toContain('SI Ledger');
+  });
+});
+
