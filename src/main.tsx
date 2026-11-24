@@ -46,7 +46,7 @@ class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
           minHeight: '100dvh',
           display: 'grid',
           placeItems: 'center',
-          background: '#f6f5fa',
+          background: '#f7f4ee',
           color: '#f3f0e8',
           padding: '24px',
           fontFamily: 'system-ui, -apple-system, sans-serif'
@@ -54,13 +54,13 @@ class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
           <div style={{
             maxWidth: '460px',
             background: '#ffffff',
-            color: '#211f31',
+            color: '#182324',
             borderRadius: '20px',
             padding: '28px 24px',
             boxShadow: '0 20px 40px rgba(0,0,0,0.25)',
             textAlign: 'center'
           }}>
-            <h2 style={{ margin: '0 0 10px', fontSize: '1.3rem', color: '#211f31' }}>Ledger Session Recovered</h2>
+            <h2 style={{ margin: '0 0 10px', fontSize: '1.3rem', color: '#182324' }}>Ledger Session Recovered</h2>
             <p style={{ margin: '0 0 16px', fontSize: '0.9rem', color: '#4a5d52', lineHeight: '1.4' }}>
               The application encountered a display issue while opening.
             </p>
@@ -84,7 +84,7 @@ class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
                 type="button"
                 onClick={this.handleReload}
                 style={{
-                  background: '#5245b2',
+                  background: '#172b31',
                   color: '#ffffff',
                   border: 'none',
                   borderRadius: '10px',
@@ -99,8 +99,8 @@ class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
                 type="button"
                 onClick={this.handleReset}
                 style={{
-                  background: '#f0edff',
-                  color: '#5245b2',
+                  background: '#eaf1e9',
+                  color: '#172b31',
                   border: '1px solid #d4ded6',
                   borderRadius: '10px',
                   padding: '10px 18px',

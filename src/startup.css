@@ -5,22 +5,22 @@ body {margin:0}
   align-content:center;
   gap:12px;
   text-align:center;
-  color:#5f5b71;
+  color:#585d56;
   font:500 .875rem/1.4 Inter,system-ui,sans-serif;
 }
 .app-startup {
   min-height:100dvh;
-  background:#f6f5fa;
+  background:#f7f4ee;
 }
 .app-startup img {border-radius:11px}
-.app-startup strong {color:#211f31;font-size:1.075rem}
+.app-startup strong {color:#182324;font-size:1.075rem}
 .ledger-loading {min-height:180px}
 .loading-line {
   display:block;
   width:72px;
   height:3px;
   border-radius:6px;
-  background:#e5e0fb;
+  background:#dde8dd;
   overflow:hidden;
 }
 .loading-line::after {
@@ -29,7 +29,7 @@ body {margin:0}
   width:45%;
   height:100%;
   border-radius:inherit;
-  background:#6253c8;
+  background:#226459;
   animation:ledger-loading 1.2s ease-in-out infinite alternate;
 }
 @keyframes ledger-loading {to {transform:translateX(122%)}}
