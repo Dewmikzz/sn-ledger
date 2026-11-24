@@ -170,11 +170,11 @@ describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)('Firestore agency boundary
     await assertFails(getDocs(collection(member('unknown'), `${prefix}/stockItems`)));
     await assertSucceeds(getDoc(doc(second, path)));
     await assertFails(updateDoc(doc(first, path), { quantity: 71, updatedAt: serverTimestamp() }));
-    const receipt = { id: 'receive', kind: 'in', loose: 5, packs: 3, boxes: 2, unitsPerPack: 6, unitsPerBox: 24, units: 71, before: 0, after: 71, note: '', authUid: 'phone-a', createdAt: serverTimestamp() };
+    const receipt = { id: 'receive', kind: 'in', loose: 5, packs: 3, boxes: 2, unitsPerPack: 6, unitsPerBox: 24, units: 71, before: 0, after: 71, lorryBefore: 0, lorryAfter: 0, note: '', authUid: 'phone-a', createdAt: serverTimestamp() };
     async function applyStock(db: Firestore, movement: typeof receipt) {
       const batch = writeBatch(db);
       batch.set(doc(db, `${path}/movements/${movement.id}`), movement);
-      batch.update(doc(db, path), { quantity: movement.after, lastMovementId: movement.id, authUid: movement.authUid, updatedAt: serverTimestamp() });
+      batch.update(doc(db, path), { quantity: movement.after, lorryQuantity: movement.lorryAfter, lastMovementId: movement.id, authUid: movement.authUid, updatedAt: serverTimestamp() });
       await batch.commit();
     }
     await assertFails(setDoc(doc(first, `${path}/movements/receive`), receipt));
@@ -183,11 +183,15 @@ describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)('Firestore agency boundary
     await assertSucceeds(applyStock(first, receipt));
     await assertFails(updateDoc(doc(first, `${path}/movements/receive`), { note: 'Rewritten' }));
     await assertFails(deleteDoc(doc(first, `${path}/movements/receive`)));
-    const issue = { ...receipt, id: 'issue', kind: 'out', loose: 0, packs: 1, boxes: 0, units: 6, before: 71, after: 65, authUid: 'phone-b' };
+    const load = { ...receipt, id: 'load', kind: 'load', loose: 0, packs: 0, boxes: 2, units: 48, before: 71, after: 23, lorryAfter: 48, authUid: 'phone-b' };
+    await assertFails(applyStock(second, { ...load, after: 71 }));
+    await assertFails(applyStock(second, { ...load, lorryAfter: 0 }));
+    await assertSucceeds(applyStock(second, load));
+    const issue = { ...receipt, id: 'issue', kind: 'out', loose: 0, packs: 1, boxes: 0, units: 6, before: 23, after: 23, lorryBefore: 48, lorryAfter: 42, authUid: 'phone-b' };
     await assertSucceeds(applyStock(second, issue));
-    await assertFails(applyStock(first, { ...issue, id: 'overdraw', loose: 100, packs: 0, units: 100, before: 65, after: -35, authUid: 'phone-a' }));
+    await assertFails(applyStock(first, { ...issue, id: 'overdraw', loose: 100, packs: 0, units: 100, lorryBefore: 42, lorryAfter: -58, authUid: 'phone-a' }));
     await assertSucceeds(updateDoc(doc(second, path), { sellingPrice: 14_000, authUid: 'phone-b', revision: 1, updatedAt: serverTimestamp() }));
-    expect((await getDocFromServer(doc(first, path))).data()).toMatchObject({ quantity: 65, sellingPrice: 14_000, revision: 1 });
+    expect((await getDocFromServer(doc(first, path))).data()).toMatchObject({ quantity: 23, lorryQuantity: 42, sellingPrice: 14_000, revision: 1 });
   });
   it('requires event and head to be atomic, with no standalone counter increment', async () => {
     const db = member();

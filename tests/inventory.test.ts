@@ -11,9 +11,18 @@ it('adds mixed boxes, packs, and loose units and values the received stock at co
 });
 
 it('rejects negative stock, fractional quantities and unconfigured packaging', () => {
-  expect(() => stockMovement('out', item, { ...input, kind: 'out' })).toThrow('Only 0 units');
+  expect(() => stockMovement('out', item, { ...input, kind: 'out' })).toThrow('Only 0 units are available on the lorry');
   expect(() => stockMovement('in', item, { ...input, loose: 1.5, kind: 'in' })).toThrow('whole quantities');
   expect(() => stockMovement('in', { ...item, unitsPerBox: 0 }, { ...input, kind: 'in' })).toThrow('units per pack or box');
+});
+
+it('transfers warehouse stock to the lorry, returns unsold stock and delivers from the lorry', () => {
+  const load = stockMovement('load', { ...item, quantity: 100 }, { ...input, kind: 'load' });
+  expect(load).toMatchObject({ before: 100, after: 29, lorryBefore: 0, lorryAfter: 71, boxes: 2, packs: 3, loose: 5 });
+  const returned = stockMovement('return', { ...item, quantity: 29, lorryQuantity: 71 }, { loose: 2, boxes: 0, packs: 1, note: '', kind: 'return' });
+  expect(returned).toMatchObject({ after: 37, lorryAfter: 63 });
+  expect(stockMovement('delivery', { ...item, quantity: 37, lorryQuantity: 63 }, { loose: 3, boxes: 1, packs: 0, note: '', kind: 'out' })).toMatchObject({ after: 37, lorryAfter: 36 });
+  expect(() => stockMovement('load', item, { ...input, kind: 'load' })).toThrow('warehouse');
 });
 
 it('records a count as the actual quantity on hand, including zero', () => {

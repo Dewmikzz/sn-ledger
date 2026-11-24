@@ -8,19 +8,20 @@ export interface StockDetails {
   sku: string;
   unitsPerPack: number;
   unitsPerBox: number;
-  costPrice: number;
-  sellingPrice: number;
+  costPrice: number | null;
+  sellingPrice: number | null;
 }
 
 export interface StockItem extends StockDetails {
   id: string;
   quantity: number;
+  lorryQuantity?: number;
   revision: number;
   lastMovementId: string;
 }
 
-export type StockMovementKind = 'in' | 'out' | 'count';
-export const stockMovementLabels = { in: 'Stock in', out: 'Stock out', count: 'Stock count' } as const;
+export type StockMovementKind = 'in' | 'out' | 'count' | 'load' | 'return';
+export const stockMovementLabels = { in: 'Receive at warehouse', out: 'Deliver from lorry', count: 'Warehouse count', load: 'Load lorry', return: 'Return to warehouse' } as const;
 
 export interface StockMovementInput {
   kind: StockMovementKind;
@@ -37,6 +38,8 @@ export interface StockMovement extends StockMovementInput {
   units: number;
   before: number;
   after: number;
+  lorryBefore?: number;
+  lorryAfter?: number;
 }
 
 function wholeNumber(value: number, max: number): boolean {
@@ -52,20 +55,24 @@ export function stockNumber(input: FormDataEntryValue | null, label: string, max
 }
 
 export function stockDetails(form: FormData): StockDetails {
+  const optionalPrice = (field: string) => {
+    const value = String(form.get(field) ?? '').trim();
+    return value ? toMinor(value) : null;
+  };
   const details = {
     name: String(form.get('name') ?? '').trim(),
     sku: String(form.get('sku') ?? '').trim(),
     unitsPerPack: stockNumber(form.get('unitsPerPack'), 'units per pack', MAX_PACKAGE_SIZE),
     unitsPerBox: stockNumber(form.get('unitsPerBox'), 'units per box', MAX_PACKAGE_SIZE),
-    costPrice: toMinor(String(form.get('costPrice') ?? '')),
-    sellingPrice: toMinor(String(form.get('sellingPrice') ?? '')),
+    costPrice: optionalPrice('costPrice'),
+    sellingPrice: optionalPrice('sellingPrice'),
   };
   if (!details.name || details.name.length > 120 || details.sku.length > 60) throw new Error('Enter an item name and use up to 60 characters for the SKU.');
   return details;
 }
 
 export function newStockItem(id: string, details: StockDetails): StockItem {
-  return { id, ...details, quantity: 0, revision: 0, lastMovementId: '' };
+  return { id, ...details, quantity: 0, lorryQuantity: 0, revision: 0, lastMovementId: '' };
 }
 
 export function stockUnits(item: Pick<StockItem, 'unitsPerPack' | 'unitsPerBox'>, input: Pick<StockMovementInput, 'loose' | 'packs' | 'boxes'>): number {
@@ -76,23 +83,27 @@ export function stockUnits(item: Pick<StockItem, 'unitsPerPack' | 'unitsPerBox'>
   return units;
 }
 
-export function stockMovement(id: string, item: StockItem, input: StockMovementInput): StockMovement {
+export function stockMovement(id: string, item: StockItem, input: StockMovementInput): StockMovement & { lorryBefore: number; lorryAfter: number } {
   const units = stockUnits(item, input);
   if (input.kind !== 'count' && units === 0) throw new Error('Enter a stock quantity greater than zero.');
-  const after = input.kind === 'count' ? units : item.quantity + (input.kind === 'in' ? units : -units);
-  if (after < 0) throw new Error(`Only ${item.quantity.toLocaleString()} units are available.`);
-  if (!wholeNumber(after, MAX_STOCK)) throw new Error('The stock balance would exceed the supported limit.');
+  const before = item.quantity;
+  const lorryBefore = item.lorryQuantity ?? 0;
+  const after = input.kind === 'count' ? units : before + ({ in: units, out: 0, load: -units, return: units }[input.kind]);
+  const lorryAfter = lorryBefore + ({ in: 0, out: -units, load: units, return: -units, count: 0 }[input.kind]);
+  if (after < 0) throw new Error(`Only ${before.toLocaleString()} units are available in the warehouse.`);
+  if (lorryAfter < 0) throw new Error(`Only ${lorryBefore.toLocaleString()} units are available on the lorry.`);
+  if (![after, lorryAfter].every(quantity => wholeNumber(quantity, MAX_STOCK))) throw new Error('The stock balance would exceed the supported limit.');
   if (input.note.length > 300) throw new Error('Use up to 300 characters for the note.');
-  return { id, ...input, unitsPerPack: item.unitsPerPack, unitsPerBox: item.unitsPerBox, units, before: item.quantity, after };
+  return { id, ...input, unitsPerPack: item.unitsPerPack, unitsPerBox: item.unitsPerBox, units, before, after, lorryBefore, lorryAfter };
 }
 
 export function stockValue(items: StockItem[]): string {
-  const cents = items.reduce((sum, item) => sum + BigInt(item.quantity) * BigInt(item.costPrice), 0n);
+  const cents = items.reduce((sum, item) => sum + BigInt(item.quantity + (item.lorryQuantity ?? 0)) * BigInt(item.costPrice ?? 0), 0n);
   return `Rs. ${(cents / 100n).toLocaleString('en-LK')}.${String(cents % 100n).padStart(2, '0')}`;
 }
 
 export function validStockDetails(details: StockDetails): boolean {
   return details.name.trim().length > 0 && details.name.length <= 120 && details.sku.length <= 60
     && [details.unitsPerPack, details.unitsPerBox].every(value => wholeNumber(value, MAX_PACKAGE_SIZE))
-    && [details.costPrice, details.sellingPrice].every(value => wholeNumber(value, MAX_MONEY));
+    && [details.costPrice, details.sellingPrice].every(value => value === null || wholeNumber(value, MAX_MONEY));
 }

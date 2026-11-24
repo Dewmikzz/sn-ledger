@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ArrowDownLeft, ArrowUpDown, ArrowUpRight, Banknote, BookOpen, CalendarDays, Camera, Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Boxes, Clock3, CreditCard, Download, Ellipsis, FileCheck2, FileText, Fingerprint, HelpCircle, Image, Landmark, LayoutDashboard, ListFilter, LockKeyhole, MapPin, Menu, MoreHorizontal, Pencil, Plus, Printer, RefreshCw, Route, Search, Settings, Shield, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Store, Trash2, Upload, Wallet, Wifi, WifiOff, X } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpDown, ArrowUpRight, Banknote, BookOpen, CalendarDays, Camera, Maximize, Minimize, Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Boxes, Clock3, CreditCard, Download, Ellipsis, FileCheck2, FileText, Fingerprint, HelpCircle, Image, Landmark, LayoutDashboard, ListFilter, LockKeyhole, MapPin, Menu, MoreHorizontal, Pencil, Plus, Printer, RefreshCw, Route, Search, Settings, Shield, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Store, Trash2, Upload, Wallet, Wifi, WifiOff, X } from 'lucide-react';
 import { businessDate, buildReport, createDayClose, deriveLedger, money, newId, parseLocationInput, shopSummary, toMinor } from './domain';
 import type { ChequeView, DailySalesEvent, InvoiceView, LedgerData, LedgerEvent, OperatorId, Shop, ShopLedgerEvent } from './domain';
 import { useLedger } from './store';
@@ -13,6 +13,8 @@ import { EntryForm } from './EntryForm';
 import { ActionForm, Field, Modal } from './forms';
 import { Stock } from './Stock';
 import { SalesDashboard, ThermalPrintSource, ThermalReport, printThermalReport } from './Insights';
+import { clearOwnerSession, ownerSessionRemaining, touchOwnerSession } from './ownerSession';
+import { NotificationTray, useLedgerAlerts } from './notifications';
 
 type Page='today'|'shops'|'cheques'|'reports'|'stock'|'settings';
 type Mode='demo'|'live';
@@ -57,8 +59,11 @@ function PinModal({title,subtitle,operator,mode,onClose,onSuccess}:{title:string
 export default function App(){
  const [mode,setMode]=useState<Mode>(()=>localStorage.getItem('si-mode')==='live'?'live':'demo');
  const [settings,setSettings]=useState(()=>readSettings(mode));
- const [operator,setOperator]=useState<OperatorId|null>(()=>mode==='demo'&&!hasPin('demo',pinProfile('demo'))?'me':null);
+ const [operator,setOperator]=useState<OperatorId|null>(()=>mode==='demo'&&(!hasPin('demo',pinProfile('demo'))||ownerSessionRemaining('demo',settings.lockMinutes)>0)?'me':null);
  const [identity,setIdentity]=useState<{uid:string}|null>(null);
+ const ownerScope=mode==='demo'?'demo':identity?.uid??null;
+ const ownerActivity=useRef(0);
+ const [fullscreen,setFullscreen]=useState(false);
  const [page,setPage]=useState<Page>('today'); const [date,setDate]=useState(businessDate()); const [route,setRoute]=useState('');
  const [search,setSearch]=useState('');
  const [selectedShop,setSelectedShop]=useState<string|null>(null);
@@ -81,6 +86,7 @@ export default function App(){
  const shopName=(id?:string|null)=>data.shops.find(s=>s.id===id)?.name||'Unknown shop';
  const deviceId=useMemo(()=>{let id=localStorage.getItem('si-device-id');if(!id){id=newId();localStorage.setItem('si-device-id',id)}return id},[]);
  const derived=useMemo(()=>deriveLedger(data),[data]);
+ const ledgerAlerts=useLedgerAlerts(mode==='live'&&operator?ownerScope:null,data,derived.cheques,ready,!online||pendingCount>0);
  const routes=useMemo(()=>[...new Set(data.shops.map(s=>s.route).filter(Boolean))].sort() as string[],[data.shops]);
  const today=businessDate();
  const daily=useMemo(()=>buildReport(data,date,{route:route||undefined}),[data,date,route]);
@@ -151,7 +157,20 @@ export default function App(){
   return list;
  },[daily?.entries,data?.shops,search,activitySort]);
  const notify=(message:string)=>setToast(message);
+ const lock=()=>{
+  if(ownerScope)clearOwnerSession(ownerScope);
+  ownerActivity.current=0;
+  setOperator(null);
+ };
+ const toggleFullscreen=async()=>{
+  try {
+   if(document.fullscreenElement)await document.exitFullscreen();
+   else if(document.fullscreenEnabled)await document.documentElement.requestFullscreen({navigationUI:'hide'});
+   else notify('Install SI Ledger from your browser menu to open it full screen.');
+  } catch { notify('Install SI Ledger from your browser menu to open it full screen.'); }
+ };
  const handleUnlock=()=>{
+  if(ownerScope){ownerActivity.current=Date.now();touchOwnerSession(ownerScope);}
   setPreloader({
    title:`Welcome, ${settings.me||defaultSettings.me}`,
    subtitle:'Authorized Distributor for Lakmee Export Lanka PVT LTD'
@@ -161,12 +180,55 @@ export default function App(){
    setPreloader(null);
   },850);
  };
- const switchMode=(next:Mode)=>{setMode(next);localStorage.setItem('si-mode',next);setSettings(readSettings(next));setOperator(next==='demo'&&!hasPin(next,pinProfile(next))?'me':null);setPage('today');setRoute('');setSearch('');setSelectedShop(null)};
+ const switchMode=(next:Mode)=>{lock();setMode(next);localStorage.setItem('si-mode',next);setSettings(readSettings(next));setOperator(next==='demo'&&!hasPin(next,pinProfile(next))?'me':null);setPage('today');setRoute('');setSearch('');setSelectedShop(null)};
  useEffect(()=>{const on=()=>setOnline(navigator.onLine);window.addEventListener('online',on);window.addEventListener('offline',on);const install=(e:Event)=>{e.preventDefault();setInstallPrompt(e)};window.addEventListener('beforeinstallprompt',install);return()=>{window.removeEventListener('online',on);window.removeEventListener('offline',on);window.removeEventListener('beforeinstallprompt',install)}},[]);
  useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),5000);return()=>clearTimeout(t)},[toast]);
  useEffect(()=>{listPhotos(mode).then(setLocalPhotos).catch(()=>{});},[mode,photoVersion,entry]);
- useEffect(()=>{if(!configured)return;return watchDeviceIdentity(id=>{setIdentity(id);if(mode==='live'&&!id)setOperator(null)})},[mode]);
- useEffect(()=>{if(!operator)return;let timer:ReturnType<typeof setTimeout>;const reset=()=>{clearTimeout(timer);timer=setTimeout(()=>setOperator(null),settings.lockMinutes*60*1000)};reset();['pointerdown','keydown','touchstart'].forEach(e=>window.addEventListener(e,reset));const vis=()=>{if(document.visibilityState==='hidden')sessionStorage.setItem('si-hidden',String(Date.now()));else if(Date.now()-Number(sessionStorage.getItem('si-hidden')||Date.now())>settings.lockMinutes*60000)setOperator(null)};document.addEventListener('visibilitychange',vis);return()=>{clearTimeout(timer);['pointerdown','keydown','touchstart'].forEach(e=>window.removeEventListener(e,reset));document.removeEventListener('visibilitychange',vis)}},[operator,settings.lockMinutes]);
+ useEffect(()=>{
+  if(!configured)return;
+  let previousUid:string|undefined;
+  return watchDeviceIdentity(id=>{
+   if(previousUid&&previousUid!==id?.uid){clearOwnerSession(previousUid);ownerActivity.current=0;}
+   previousUid=id?.uid;
+   setIdentity(id);
+   if(mode==='live'&&!id)setOperator(null);
+  });
+ },[mode]);
+ useEffect(()=>{
+  if(mode==='live'&&ownerScope)setOperator(ownerSessionRemaining(ownerScope,settings.lockMinutes)>0?'me':null);
+ },[mode,ownerScope]);
+ useEffect(()=>{
+  if(!ownerScope||!operator)return;
+  const duration=settings.lockMinutes*60_000;
+  const remaining=Math.max(ownerSessionRemaining(ownerScope,settings.lockMinutes),ownerActivity.current+duration-Date.now());
+  if(!remaining&&(mode==='live'||hasPin('demo',pinProfile('demo')))){setOperator(null);return;}
+  let deadline=Date.now()+(remaining||duration);
+  let timer:ReturnType<typeof setTimeout>;
+  const expire=()=>{if(Date.now()>=deadline){clearOwnerSession(ownerScope);ownerActivity.current=0;setOperator(null);}};
+  const schedule=()=>{clearTimeout(timer);timer=setTimeout(expire,Math.max(0,deadline-Date.now()));};
+  const activity=()=>{
+   if(Date.now()>=deadline){expire();return;}
+   ownerActivity.current=Date.now();
+   touchOwnerSession(ownerScope);
+   deadline=Date.now()+duration;
+   schedule();
+  };
+  if(!remaining)touchOwnerSession(ownerScope);
+  schedule();
+  const events=['pointerdown','keydown','touchstart'];
+  events.forEach(event=>window.addEventListener(event,activity));
+  document.addEventListener('visibilitychange',expire);
+  return()=>{
+   clearTimeout(timer);
+   events.forEach(event=>window.removeEventListener(event,activity));
+   document.removeEventListener('visibilitychange',expire);
+  };
+ },[mode,operator,ownerScope,settings.lockMinutes]);
+ useEffect(()=>{
+  const update=()=>setFullscreen(!!document.fullscreenElement);
+  document.addEventListener('fullscreenchange',update);
+  return()=>document.removeEventListener('fullscreenchange',update);
+ },[]);
  const updateSettings=(next:typeof settings)=>{setSettings(next);localStorage.setItem(`si-settings-${mode}`,JSON.stringify(next))};
  const operatorName=(id?:OperatorId|null)=>id==='brother'?(settings?.brother||'Brother'):(settings?.me||'Me');
  const goto=(next:Page)=>{setPage(next);setSearch('');setMenuOpen(false)};
@@ -184,13 +246,13 @@ export default function App(){
  if(!operator || (mode==='live'&&!identity))return <><Login key={mode} mode={mode} settings={settings} hasIdentity={!!identity} onUnlock={handleUnlock} onDemo={()=>switchMode('demo')} onEnroll={()=>setEnrolOpen(true)}/>{enrolOpen&&<Enroll onClose={()=>setEnrolOpen(false)} onDone={()=>{setEnrolOpen(false);switchMode('live');notify('Device set up. Use your Owner PIN to unlock.')}}/>}{toast&&<div className="toast"><Check size={18}/>{toast}</div>}</>;
  return <div className="app-shell ledger-shell">
   <aside className={`sidebar ${menuOpen?'mobile-open':''}`}>
-   <a href="#today" className="brand" onClick={e=>{e.preventDefault();goto('today')}}><div className="brand-mark"><BookOpen size={25}/></div><div><strong>SI Ledger</strong><span>SAMAN INDIKA</span></div></a>
+   <a href="#today" className="brand" onClick={e=>{e.preventDefault();goto('today')}}><img className="ledger-brand-icon" src="/icons/ledger-mark-192.png" width="42" height="42" alt=""/><div><strong>SI Ledger</strong><span>SAMAN INDIKA</span></div></a>
    <div className="workspace-label">YOUR WORKSPACE</div>
    <nav>{navItems.map(({id,label,icon:Icon})=><button key={id} className={`nav-item ${page===id?'active':''}`} onClick={()=>goto(id)}><Icon size={19}/><span>{label}</span>{id==='cheques'&&derived.cheques.filter(c=>c.status==='received').length>0&&<span className="nav-count">{derived.cheques.filter(c=>c.status==='received').length}</span>}</button>)}</nav>
    <div className="sidebar-bottom"><div className="agency-info"><span className="agency-avatar">SI</span><div><b>Lakmee distribution</b><span><MapPin size={12}/> Polonnaruwa, Sri Lanka</span></div></div><button className={`nav-item ${page==='settings'?'active':''}`} onClick={()=>goto('settings')}><Settings size={19}/><span>Settings</span></button><button className="nav-item" onClick={()=>setInstallOpen(true)}><Smartphone size={19}/><span>Install app</span><Download size={15}/></button><div className="sidebar-credit">Developed by <a href="https://dew.pshycolab.com" target="_blank" rel="noreferrer">Dewmika Anusara</a></div></div>
   </aside>
   <div className="main-shell">
-   <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" aria-label="Open menu" onClick={()=>setMenuOpen(!menuOpen)}><Menu size={21}/></button><span className="breadcrumb">Workspace</span><ChevronRight size={15}/><b>{page==='today'?'Dashboard':page[0].toUpperCase()+page.slice(1)}</b></div><div className="topbar-right"><button className={`sync-indicator ${!online?'offline':''}`} onClick={()=>{ledgerStore.retrySync().catch(e=>notify(e.message));if(mode==='demo')notify('Demo data stays on this device. Connect Firebase for live sync.')}} title="Check sync status">{online?<CheckCheck size={16}/>:<WifiOff size={16}/>}<span>{mode==='demo'?'Saved on this device':syncStatus==='synced'?'All changes synced':syncStatus==='syncing'?'Syncing…':syncStatus==='attention'?'Needs attention':online?'Saved on this phone':'Offline'}</span></button><span className="topbar-divider"/><button className="profile-control" onClick={()=>setOperator(null)} title="Lock ledger"><span className="avatar">{initials(operatorName(operator))}</span><span className="profile-name">{operatorName(operator)}<small>Owner</small></span><LockKeyhole size={15}/></button></div></header>
+   <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" aria-label="Open menu" onClick={()=>setMenuOpen(!menuOpen)}><Menu size={21}/></button><span className="breadcrumb">Workspace</span><ChevronRight size={15}/><b>{page==='today'?'Dashboard':page[0].toUpperCase()+page.slice(1)}</b></div><div className="topbar-right"><NotificationTray {...ledgerAlerts} onClear={ledgerAlerts.markRead} onDismiss={ledgerAlerts.closeLatest} onCheques={()=>goto('cheques')} onHome={()=>goto('today')}/><button type="button" className="icon-button fullscreen-button" title={fullscreen?'Exit full screen':'Full screen'} aria-label={fullscreen?'Exit full screen':'Full screen'} onClick={()=>void toggleFullscreen()}>{fullscreen?<Minimize size={19}/>:<Maximize size={19}/>}</button><button className={`sync-indicator ${!online?'offline':''}`} onClick={()=>{ledgerStore.retrySync().catch(e=>notify(e.message));if(mode==='demo')notify('Demo data stays on this device. Connect Firebase for live sync.')}} title="Check sync status">{online?<CheckCheck size={16}/>:<WifiOff size={16}/>}<span>{mode==='demo'?'Saved on this device':syncStatus==='synced'?'All changes synced':syncStatus==='syncing'?'Syncing…':syncStatus==='attention'?'Needs attention':online?'Saved on this phone':'Offline'}</span></button><span className="topbar-divider"/><button className="profile-control" onClick={lock} title="Lock ledger"><span className="avatar">{initials(operatorName(operator))}</span><span className="profile-name">{operatorName(operator)}<small>Owner</small></span><LockKeyhole size={15}/></button></div></header>
    {mode==='demo'&&<div className="demo-banner"><span><span className="demo-dot"/>Demo workspace <span className="demo-detail">· Explore with sample records. Your live agency stays separate.</span></span><button onClick={()=>setEnrolOpen(true)}>Set up your agency <ChevronRight size={14}/></button></div>}
    {!online&&<div className="offline-banner"><WifiOff size={15}/>You’re offline. Entries and original photos are saved on this phone.</div>}
    <main>
@@ -212,7 +274,7 @@ export default function App(){
     {page==='stock'&&<Stock key={mode} mode={mode} online={online} notify={notify}/>}
     {page==='cheques'&&<Cheques cheques={derived.cheques} data={data} onShop={openShop} onPhotos={setPhotos} onTransition={async(c,status)=>{try{await submit({...eventBase(c.shopId),kind:'cheque-status',chequeId:c.id,status});notify(`Cheque marked ${status}. Ledger updated.`)}catch(e){notify((e as Error).message)}}}/>}
     {page==='reports'&&<><div className={`notice ${incomplete?'amber':'neutral'}`}><CircleAlert size={18}/><span>{mode==='demo'?'Demo report — sample records only. ':!online?'You are offline. This report may be incomplete. ':pendingCount?`${pendingCount} entries on this device are awaiting sync. `:'This device is up to date. '}Another device may still have unsynced entries.</span></div><div className="report-actions"><span>{formatDate(date)}</span><div><button className="button secondary" onClick={()=>setAddChoice(true)}><Plus size={16}/>Add entry</button><button className="button secondary" onClick={()=>exportCSV(data,date,route,settings.agency)}><Download size={16}/>Export CSV</button><button className="button secondary" onClick={()=>window.print()}><Printer size={16}/>Print full page</button><button className="button secondary" onClick={()=>setThermalOpen(true)}>Receipt preview</button><button className="button primary" onClick={()=>printThermalReport()}><Printer size={16}/>Print 80 mm</button></div></div><div className="report-grid"><section className="panel report-preview"><div className="report-paper-heading"><div className="report-distributor-header" style={{width:'100%'}}><div className="brand-mark small" style={{float:'right',margin:'0 0 10px 10px'}}><BookOpen size={22}/></div><h2 className="distributor-name">HG Saman Indika Wimalaratna</h2><div className="distributor-sub">Authorized Distributor for Lakmee Export Lanka PVT LTD</div><div className="distributor-addr">No 207/1, Palugasdamana, Polonnaruwa</div><div className="distributor-contact">Contact : 0765496411</div><div className="report-agency-title">{settings.agency} · Daily Collections &amp; Ledger Report</div></div></div><div className="report-meta"><div><b>{formatDate(date)}</b><span>Polonnaruwa, Sri Lanka · Asia/Colombo</span></div><div><b>{route||'All routes'}</b></div></div><div className="report-section"><h3>Sales &amp; credit</h3>{daily.salesTotalTooLow&&<p role="alert">Daily sales total needs review. Figures use recorded invoices.</p>}<ReportLine label={daily.dailySales&&!daily.salesTotalTooLow?'Total sales':`Recorded invoice value (${daily.invoiceCount})`} amount={daily.invoiceValue}/><ReportLine label="Cheques from sales" amount={daily.salesCheques}/><ReportLine label="New credit issued" amount={daily.newCredit}/></div><div className="report-section"><h3>Cash reconciliation</h3><ReportLine label="Cash from sales" amount={daily.cashFromInvoices}/><ReportLine label="Cash collected against balances" amount={daily.cashFromCollections}/><ReportLine label="Total expected cash" amount={daily.expectedCash} bold/><ReportLine label="Physical cash counted" amount={daily.physicalCash}/><ReportLine label="Difference (counted − expected)" amount={daily.difference} bold tone={daily.difference?'red':'green'}/></div><div className="report-section"><h3>Cheque movements</h3><ReportLine label="Received" amount={daily.chequesReceived}/><ReportLine label="Deposited" amount={daily.chequesDeposited}/><ReportLine label="Cleared" amount={daily.chequesCleared}/><ReportLine label="Returned" amount={daily.chequesReturned}/></div>{daily.originalClose&&<div className="close-note"><FileCheck2 size={18}/><div><b>Original close retained</b><p>{operatorName(daily.originalClose.operatorId)} · {new Date(daily.originalClose.createdAt).toLocaleString('en-GB',{timeZone:'Asia/Colombo'})}</p><p>Expected {money(daily.originalClose.snapshot.expectedCash)} · Counted {money(daily.originalClose.countedCash)} · Difference {money(daily.originalClose.countedCash-daily.originalClose.snapshot.expectedCash)}</p>{daily.revised&&<strong className="amber-text">Revised figures shown above. Original close is unchanged.</strong>}</div></div>}<div className="print-foot-official"><div className="dev-title">System Develop By : Dewmika Anusara</div><div className="dev-links"><a href="https://www.dew.pshycolab.com" target="_blank" rel="noreferrer">www.dew.pshycolab.com</a> | 0765496411</div><div className="owner-line">HG Saman Indika Wimalaratna · Authorized Distributor for Lakmee Export Lanka PVT LTD</div></div></section><div><section className="panel report-checks"><h2>Before you close</h2><AttentionRow icon={<Clock3 size={17}/>} title="Overdue balances" subtitle="Current balances due before report date" value={`${daily.overdueInvoices.length} invoices`} tone="red" onClick={()=>goto('shops')}/><AttentionRow icon={<Camera size={17}/>} title="Missing receipt photos" subtitle="Invoices recorded on this date" value={`${daily.missingPhotos.length} invoices`} tone="amber" onClick={()=>goto('shops')}/><AttentionRow icon={<RefreshCw size={17}/>} title="Awaiting sync" subtitle={mode==='demo'?'Demo records stay on this device':'Pending work on this device'} value={`${pendingCount} entries`} onClick={()=>ledgerStore.retrySync()}/></section>{daily.conflicts.length>0&&<section className="panel report-checks"><h2>Entries needing review</h2>{daily.conflicts.map(e=><div className="conflict-item" key={e.id}><b>{shopName(e.shopId)}</b><p>{derived.statuses[e.id]?.reason}</p><small>Submission retained · {operatorName(e.operatorId)}</small><button className="text-button" onClick={()=>openShop(e.shopId)}>Review shop ledger</button></div>)}</section>}{daily.corrections.length>0&&<section className="panel report-checks"><h2>Correction history</h2>{daily.corrections.map(e=><div className="conflict-item" key={e.id}><b>{shopName(e.shopId)}</b><p>{e.reason}</p><small>{formatDate(e.date,true)} · {operatorName(e.operatorId)} · revised invoice {money(e.total)}</small></div>)}</section>}<p className="report-hint"><ShieldCheck size={18}/>Closing the day preserves the original figures. Later corrections remain visible with a reason and operator.</p></div></div></>}
-    {page==='settings'&&<SettingsPage settings={settings} updateSettings={updateSettings} mode={mode} identity={identity} onMode={switchMode} onEnroll={()=>setEnrolOpen(true)} onLock={()=>setOperator(null)} localPhotos={localPhotos} onPhotoChange={()=>setPhotoVersion(v=>v+1)} notify={notify} operator={pinProfile(mode)} onInstall={()=>setInstallOpen(true)} onClearAll={async()=>{await ledgerStore.clearAllData();await clearPhotos(mode);setPhotoVersion(v=>v+1);notify('All ledger records and photos cleared.')}} onResetDemo={async()=>{await ledgerStore.resetDemo();notify('Demo sample records restored.')}} queue={ledgerStore.queue} onRetrySync={()=>ledgerStore.retrySync().catch(e=>notify(e.message))} onDismissQueueItem={async(id)=>{await ledgerStore.dismissQueueItem(id);notify('Queue item dismissed.');}}/>}
+    {page==='settings'&&<SettingsPage settings={settings} updateSettings={updateSettings} mode={mode} identity={identity} onMode={switchMode} onEnroll={()=>setEnrolOpen(true)} onLock={lock} localPhotos={localPhotos} onPhotoChange={()=>setPhotoVersion(v=>v+1)} notify={notify} operator={pinProfile(mode)} onInstall={()=>setInstallOpen(true)} onClearAll={async()=>{await ledgerStore.clearAllData();await clearPhotos(mode);setPhotoVersion(v=>v+1);notify('All ledger records and photos cleared.')}} onResetDemo={async()=>{await ledgerStore.resetDemo();notify('Demo sample records restored.')}} queue={ledgerStore.queue} onRetrySync={()=>ledgerStore.retrySync().catch(e=>notify(e.message))} onDismissQueueItem={async(id)=>{await ledgerStore.dismissQueueItem(id);notify('Queue item dismissed.');}}/>}
     </>}
     {ledgerStore.error&&<div className="notice error"><CircleAlert size={18}/><span>{ledgerStore.error}</span><button className="text-button" onClick={()=>ledgerStore.retrySync()}>Retry</button></div>}
     <footer className="main-footer"><span>Saman Indika Ledger <span>·</span> Polonnaruwa</span><span>Made for a clearer day.</span></footer>
@@ -338,6 +400,7 @@ function Login({mode,settings,hasIdentity,onUnlock,onDemo,onEnroll}:{mode:Mode;s
   <div className="geo-shape-bottom-right" aria-hidden="true"/>
   <div className="premium-login-frame">
    <div className="login-card-header-accent">
+    <img className="ledger-brand-icon login-brand-icon" src="/icons/ledger-mark-192.png" width="58" height="58" alt="SI Ledger"/>
     <div className="login-card-corner-triangle" aria-hidden="true"/>
     <span className="distributor-login-pill">Lakmee Export Lanka PVT LTD</span>
     <h2 className="login-company-title">HG Saman Indika Wimalaratna</h2>

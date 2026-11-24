@@ -106,7 +106,7 @@ export async function saveStockMovement(mode: LedgerMode, shown: StockItem, id: 
     if (history.some(movement => movement.id === id)) return;
     const movement = prepareMovement(id, data.items.find(item => item.id === shown.id), shown, input);
     saveDemo({
-      items: data.items.map(item => item.id === shown.id ? { ...item, quantity: movement.after, lastMovementId: id } : item),
+      items: data.items.map(item => item.id === shown.id ? { ...item, quantity: movement.after, lorryQuantity: movement.lorryAfter, lastMovementId: id } : item),
       history: { ...data.history, [shown.id]: [{ ...movement, recordedAt: new Date().toISOString() }, ...history] },
     });
     return;
@@ -119,6 +119,6 @@ export async function saveStockMovement(mode: LedgerMode, shown: StockItem, id: 
     if (existing.exists()) return;
     const movement = prepareMovement(id, item.data() as StockItem | undefined, shown, input);
     transaction.set(moveRef, { ...movement, authUid, createdAt: serverTimestamp() });
-    transaction.update(itemRef, { quantity: movement.after, lastMovementId: id, updatedAt: serverTimestamp(), authUid });
+    transaction.update(itemRef, { quantity: movement.after, lorryQuantity: movement.lorryAfter, lastMovementId: id, updatedAt: serverTimestamp(), authUid });
   });
 }

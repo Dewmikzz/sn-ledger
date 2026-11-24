@@ -55,7 +55,7 @@ describe('Production PWA Manifest and Offline Service Worker', () => {
     expect(manifest.id).toBe('/');
     expect(manifest.name).toBe('Saman Indika Ledger');
     expect(manifest.short_name).toBe('SI Ledger');
-    expect(manifest.display).toBe('standalone');
+    expect(manifest.display).toBe('fullscreen');
     expect(manifest.theme_color).toBe('#213b31');
     expect(manifest.background_color).toBe('#f3f0e8');
     expect(manifest.start_url).toBe('/');

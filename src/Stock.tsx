@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
-import { ArrowDownToLine, ArrowUpFromLine, Boxes, ClipboardCheck, Package, Pencil, Plus, Search } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, Boxes, ClipboardCheck, Package, Pencil, Plus, Search, Truck, Warehouse } from 'lucide-react';
 import { money, newId } from './domain';
 import { ActionForm, Field, Modal } from './forms';
-import { MAX_PACKAGE_SIZE, MAX_STOCK, stockDetails, stockMovementLabels, stockNumber, stockUnits, stockValue, type StockItem, type StockMovement, type StockMovementKind } from './inventory';
+import { MAX_PACKAGE_SIZE, MAX_STOCK, stockDetails, stockMovementLabels, stockNumber, stockUnits, type StockItem, type StockMovement, type StockMovementKind } from './inventory';
 import { saveStockItem, saveStockMovement, watchStock, watchStockHistory } from './stockStore';
 import type { LedgerMode } from './store';
 
 type StockView = { type: 'details'; id: string } | { type: 'edit'; item?: StockItem } | { type: 'movement'; item: StockItem; kind: StockMovementKind };
+const price = (value: number | null) => value === null ? '—' : money(value);
 
 function labelPackaging(item: StockItem) {
   return [item.unitsPerPack ? `${item.unitsPerPack} units/pack` : '', item.unitsPerBox ? `${item.unitsPerBox} units/box` : ''].filter(Boolean).join(' · ');
@@ -24,8 +25,8 @@ function EditItem({ mode, item, onClose, onSave }: { mode: LedgerMode; item?: St
         <Field label="Item code / SKU (optional)"><input name="sku" defaultValue={item?.sku} maxLength={60} /></Field>
         <Field label="Units per pack (optional)"><input name="unitsPerPack" type="number" min="1" max={MAX_PACKAGE_SIZE} step="1" defaultValue={item?.unitsPerPack || undefined} /></Field>
         <Field label="Units per box (optional)"><input name="unitsPerBox" type="number" min="1" max={MAX_PACKAGE_SIZE} step="1" defaultValue={item?.unitsPerBox || undefined} /></Field>
-        <Field label="Stock cost per unit (Rs.)"><input name="costPrice" inputMode="decimal" defaultValue={item ? (item.costPrice / 100).toFixed(2) : undefined} required /></Field>
-        <Field label="Selling price per unit (Rs.)"><input name="sellingPrice" inputMode="decimal" defaultValue={item ? (item.sellingPrice / 100).toFixed(2) : undefined} required /></Field>
+        <Field label="Stock cost per unit (Rs.)"><input name="costPrice" inputMode="decimal" defaultValue={item?.costPrice != null ? (item.costPrice / 100).toFixed(2) : undefined} /></Field>
+        <Field label="Selling price per unit (Rs.)"><input name="sellingPrice" inputMode="decimal" defaultValue={item?.sellingPrice != null ? (item.sellingPrice / 100).toFixed(2) : undefined} /></Field>
       </div>
       <p className="field-help">Use the number of individual units inside each pack or box. Both prices are for one individual unit.</p>
     </ActionForm>
@@ -47,6 +48,14 @@ function MovementForm({ mode, item, kind, onClose, onSave }: { mode: LedgerMode;
       preview = `${units.toLocaleString()} units`;
     }
   } catch { /* Validation is shown on submission. */ }
+  const lorry = item.lorryQuantity ?? 0;
+  const directions: Record<StockMovementKind, string> = {
+    in: 'Receive stock into the warehouse.',
+    out: `Deduct delivered stock from the lorry. Available: ${lorry.toLocaleString()} units.`,
+    count: 'Enter the total physical count in the warehouse.',
+    load: `Move stock from Warehouse to Lorry. Warehouse available: ${item.quantity.toLocaleString()} units.`,
+    return: `Move unsold stock from Lorry back to Warehouse. Lorry available: ${lorry.toLocaleString()} units.`,
+  };
   return <Modal title={stockMovementLabels[kind]} subtitle={item.name} onClose={onClose}>
     <ActionForm label={`Save ${stockMovementLabels[kind].toLowerCase()}`} action={async form => {
       if (!Object.values(counts).some(value => value !== '')) throw new Error('Enter the quantity. For a stock count of zero, enter 0.');
@@ -59,7 +68,7 @@ function MovementForm({ mode, item, kind, onClose, onSave }: { mode: LedgerMode;
       });
       onSave();
     }}>
-      <p className="field-help">{kind === 'count' ? 'Enter the full quantity you counted, including loose units and sealed packs or boxes.' : `Current stock is ${item.quantity.toLocaleString()} units. Enter the quantity to record.`}</p>
+      <p className="field-help">{directions[kind]} Enter unopened packs or boxes and loose units in separate fields.</p>
       <div className="field-grid">{fields.map(field => <Field key={field.name} label={field.label}>
         <input name={field.name} type="number" min="0" max={MAX_STOCK} step="1" placeholder="0" value={counts[field.name]} onChange={event => setCounts({ ...counts, [field.name]: event.target.value })} />
       </Field>)}</div>
@@ -76,19 +85,26 @@ function ItemDetails({ item, mode, writable, onMove, onEdit, onClose }: { item: 
   return <Modal title={item.name} subtitle={[item.sku, labelPackaging(item)].filter(Boolean).join(' · ')} onClose={onClose} wide>
     <div className="modal-body">
       <div className="stock-detail-metrics">
-        <div><span>On hand</span><strong>{item.quantity.toLocaleString()} units</strong></div>
-        <div><span>Stock cost / unit</span><strong>{money(item.costPrice)}</strong></div>
-        <div><span>Selling price / unit</span><strong>{money(item.sellingPrice)}</strong></div>
+        <div><span>Warehouse</span><strong>{item.quantity.toLocaleString()} units</strong></div>
+        <div><span>Lorry</span><strong>{(item.lorryQuantity ?? 0).toLocaleString()} units</strong></div>
+        <div><span>Stock cost / unit</span><strong>{price(item.costPrice)}</strong></div>
+        <div><span>Selling price / unit</span><strong>{price(item.sellingPrice)}</strong></div>
       </div>
       <div className="stock-actions">
-        <button type="button" className="button primary" disabled={!writable} onClick={() => onMove('in')}><ArrowDownToLine size={16}/>Stock in</button>
-        <button type="button" className="button secondary" disabled={!writable} onClick={() => onMove('out')}><ArrowUpFromLine size={16}/>Stock out</button>
-        <button type="button" className="button secondary" disabled={!writable} onClick={() => onMove('count')}><ClipboardCheck size={16}/>Stock count</button>
+        <button type="button" className="button primary" disabled={!writable} onClick={() => onMove('load')}><Truck size={16}/>Load lorry</button>
+        <button type="button" className="button secondary" disabled={!writable} onClick={() => onMove('in')}><ArrowDownToLine size={16}/>Receive at warehouse</button>
+        <button type="button" className="button secondary" disabled={!writable} onClick={() => onMove('return')}><Warehouse size={16}/>Return to warehouse</button>
+        <button type="button" className="button secondary" disabled={!writable} onClick={() => onMove('out')}><ArrowUpFromLine size={16}/>Deliver from lorry</button>
+        <button type="button" className="button ghost" disabled={!writable} onClick={() => onMove('count')}><ClipboardCheck size={16}/>Warehouse count</button>
         <button type="button" className="button ghost" disabled={!writable} onClick={onEdit}><Pencil size={16}/>Edit item</button>
       </div>
       <h3>Recent stock movements</h3>
       {error ? <p role="alert" className="error-text">{error}</p> : history === null ? <p className="muted">Loading movements…</p> : history.length ? <ul className="stock-history">
-        {history.map(move => <li key={move.id}><div><strong>{stockMovementLabels[move.kind]}</strong><p>{move.recordedAt ? new Date(move.recordedAt).toLocaleString('en-GB', { timeZone: 'Asia/Colombo', dateStyle: 'medium', timeStyle: 'short' }) : ''}{move.note && ` · ${move.note}`}</p></div><div><strong>{move.kind === 'in' ? '+' : move.kind === 'out' ? '−' : 'Counted '}{move.units.toLocaleString()} units</strong><p>Balance {move.after.toLocaleString()} units</p></div></li>)}
+        {history.map(move => <li key={move.id}>
+          <div><strong>{move.kind === 'out' && move.lorryAfter == null ? 'Stock out' : stockMovementLabels[move.kind]}</strong><p>{move.recordedAt ? new Date(move.recordedAt).toLocaleString('en-GB', { timeZone: 'Asia/Colombo', dateStyle: 'medium', timeStyle: 'short' }) : ''}{move.note && ` · ${move.note}`}</p>
+          <p>{[move.boxes && `${move.boxes} ${move.boxes === 1 ? 'box' : 'boxes'}`, move.packs && `${move.packs} ${move.packs === 1 ? 'pack' : 'packs'}`, move.loose && `${move.loose} loose`].filter(Boolean).join(' · ')}</p></div>
+          <div><strong>{move.units.toLocaleString()} units</strong><p>Warehouse {move.after.toLocaleString()}{move.lorryAfter != null && ` · Lorry ${move.lorryAfter.toLocaleString()}`}</p></div>
+        </li>)}
       </ul> : <p className="muted">No movements recorded yet.</p>}
     </div>
   </Modal>;
@@ -110,8 +126,8 @@ export function Stock({ mode, online, notify }: { mode: LedgerMode; online: bool
     {!writable && <p className="notice amber">Reconnect to view current inventory and record stock changes.</p>}
     <div className="stock-summary">
       <div className="dashboard-kpi dashboard-kpi-sales"><span><span className="dashboard-icon"><Boxes size={17}/></span>Stock items</span><strong>{items ? all.length.toLocaleString() : '—'}</strong></div>
-      <div className="dashboard-kpi"><span><span className="dashboard-icon"><Package size={17}/></span>Units on hand</span><strong>{items ? all.reduce((sum, item) => sum + item.quantity, 0).toLocaleString() : '—'}</strong></div>
-      <div className="dashboard-kpi"><span><span className="dashboard-icon"><ClipboardCheck size={17}/></span>Stock value at cost</span><strong>{items ? stockValue(all) : '—'}</strong></div>
+      <div className="dashboard-kpi"><span><span className="dashboard-icon"><Warehouse size={17}/></span>Warehouse units</span><strong>{items ? all.reduce((sum, item) => sum + item.quantity, 0).toLocaleString() : '—'}</strong></div>
+      <div className="dashboard-kpi"><span><span className="dashboard-icon"><Truck size={17}/></span>Lorry units</span><strong>{items ? all.reduce((sum, item) => sum + (item.lorryQuantity ?? 0), 0).toLocaleString() : '—'}</strong></div>
     </div>
     <section className="panel stock-list">
       <div className="stock-toolbar">
@@ -119,12 +135,11 @@ export function Stock({ mode, online, notify }: { mode: LedgerMode; online: bool
         <button type="button" className="button primary" disabled={!writable} onClick={() => setView({ type: 'edit' })}><Plus size={17}/>Add item</button>
       </div>
       {error ? <p role="alert" className="stock-empty error-text">{error}</p> : items === null ? <p role="status" className="stock-empty">Loading inventory…</p> : filtered.length ? <div className="stock-table">
-        <div className="stock-table-heading"><span>Item</span><span>On hand</span><span>Cost / unit</span><span>Selling / unit</span></div>
+        <div className="stock-table-heading"><span>Item</span><span>Warehouse</span><span>Lorry</span></div>
         {filtered.map(item => <button key={item.id} type="button" className="stock-item-row" onClick={() => showDetails(item.id)}>
           <span><strong>{item.name}</strong><small>{[item.sku, labelPackaging(item)].filter(Boolean).join(' · ')}</small></span>
-          <span><small className="stock-mobile-label">On hand</small><strong>{item.quantity.toLocaleString()} units</strong></span>
-          <span><small className="stock-mobile-label">Cost / unit</small>{money(item.costPrice)}</span>
-          <span><small className="stock-mobile-label">Selling / unit</small>{money(item.sellingPrice)}</span>
+          <span><small className="stock-mobile-label">Warehouse</small><strong>{item.quantity.toLocaleString()} units</strong></span>
+          <span><small className="stock-mobile-label">Lorry</small><strong>{(item.lorryQuantity ?? 0).toLocaleString()} units</strong></span>
         </button>)}
       </div> : <div className="stock-empty"><Package size={25}/><h3>{all.length ? 'No matching items' : 'No stock items yet'}</h3><p>{all.length ? 'Try another item name or SKU.' : 'Add an item to set its prices and pack or box quantities.'}</p></div>}
     </section>
