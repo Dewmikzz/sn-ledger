@@ -1,6 +1,6 @@
-import {useMemo,useState,type CSSProperties} from 'react';
+import {useMemo,useState} from 'react';
 import {createPortal} from 'react-dom';
-import {Banknote,BarChart3,CalendarDays,ChartPie,Printer,Wallet} from 'lucide-react';
+import {Banknote,BarChart3,CalendarDays,ChartPie,Printer,TrendingUp,Wallet} from 'lucide-react';
 import {businessDate,deriveLedger,money,addDays,salesFigures} from './domain';
 import type {DailyReport,LedgerData,OperatorId} from './domain';
 
@@ -63,7 +63,6 @@ function shortDate(date: string) {
 
 export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:string;route:string;warning:string}){
   const [period,setPeriod]=useState<Period>('month');
-  const [selectedPoint,setSelectedPoint]=useState<string|null>(null);
   const month=calendarMonth(date);
   const [customFrom,setCustomFrom]=useState(month.from);
   const [customTo,setCustomTo]=useState(date);
@@ -90,19 +89,15 @@ export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:s
     {label:'Cheques from sales',value:result.salesCheques,color:'var(--dashboard-orange)'},
     {label:'New credit',value:result.newCredit,color:'var(--dashboard-slate)'},
   ];
-  const cashShare=result.sales?Math.min(100,Math.max(0,result.saleCash/result.sales*100)):0;
-  const selected=chartPoints.find(point=>point.date===selectedPoint&&point.sales>0)??chartPoints.find(point=>point.sales===highest);
-  const periodLabel=!valid?'Select a date range':period==='month'?month.label:from===to?shortDate(to):`${shortDate(from)} – ${shortDate(to)}`;
+  const cashAngle=result.sales?result.saleCash/result.sales*100:0;
+  const chequeAngle=result.sales?(result.saleCash+result.salesCheques)/result.sales*100:0;
+  const split=result.sales?`conic-gradient(var(--dashboard-mint) 0 ${cashAngle}%, var(--dashboard-orange) ${cashAngle}% ${chequeAngle}%, var(--dashboard-slate) ${chequeAngle}% 100%)`:undefined;
 
   return <section className="sales-dashboard" aria-label="Sales dashboard">
-    <div className="sales-heading">
-      <div><h2>Total sales</h2><p>{periodLabel}{route&&` · ${route}`}</p></div>
-      <select className="dashboard-period" aria-label="Dashboard period" value={period} onChange={event=>{
-        const next=periods.find(option=>String(option.value)===event.target.value);
-        if(next){setPeriod(next.value);setSelectedPoint(null);}
-      }}>
-        {periods.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}
-      </select>
+    <div className="dashboard-heading">
+      <div className="dashboard-periods" role="group" aria-label="Dashboard period">
+        {periods.map(option=><button key={option.value} type="button" aria-pressed={period===option.value} onClick={()=>setPeriod(option.value)}>{option.label}</button>)}
+      </div>
     </div>
     {period==='custom'&&<div className="dashboard-dates">
       <label className="field">From<input type="date" value={customFrom} onChange={event=>setCustomFrom(event.target.value)}/></label>
@@ -112,7 +107,11 @@ export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:s
       {warning&&<p className="dashboard-status"><span/>{warning}</p>}
       {result.reviewDays>0&&<p role="alert" className="notice amber">{result.reviewDays} daily sales {result.reviewDays===1?'total needs':'totals need'} review. Those days show recorded invoice figures.</p>}
       <div className="sales-summary">
-        <div className="sales-total" key={from+':'+to+':'+route}><span>LKR</span><strong>{new Intl.NumberFormat('en-LK',{minimumFractionDigits:2,maximumFractionDigits:2}).format(result.sales/100)}</strong><small>{result.count} itemized {result.count===1?'invoice':'invoices'}</small></div>
+        <div className="sales-summary-header">
+          <div><h2>Sales overview</h2><p>{period==='month'?month.label:from===to?shortDate(to):`${shortDate(from)} – ${shortDate(to)}`} · {route?`${route}, itemized sales`:'All routes'}</p></div>
+          <TrendingUp size={23} aria-hidden="true"/>
+        </div>
+        <div className="sales-total"><span>Total sales</span><strong>{money(result.sales)}</strong><small>{result.count} itemized {result.count===1?'invoice':'invoices'}</small></div>
         <div className="sales-metrics">
           <div><span><ChartPie size={16}/>Est. gross profit</span><strong>{money(result.profit)}</strong><small>7% of sales</small></div>
           <div><span><Wallet size={16}/>Cash collected</span><strong>{money(result.cash)}</strong><small>{money(result.cash-result.saleCash)} from old balances</small></div>
@@ -122,12 +121,11 @@ export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:s
       <div className="dashboard-charts">
         <section className="dashboard-panel">
           <div className="dashboard-panel-heading"><div><h3>Sales trend</h3><p>{groupSize>1?'Grouped sales totals in LKR':'Daily totals in LKR'}</p></div><span className="dashboard-icon"><BarChart3 size={18}/></span></div>
-          {selected&&<p className="chart-reading" aria-live="polite"><span>{selected.label}</span><strong>{money(selected.sales)}</strong></p>}
           {result.sales>0?<div className="dashboard-trend" role="group" aria-label="Sales chart">
             <div className="dashboard-scale" aria-hidden="true"><span>{money(highest)}</span><span>0</span></div>
             <div className="dashboard-plot">
-              <div className="dashboard-columns" key={from+':'+to+':'+route} style={{gridTemplateColumns:`repeat(${chartPoints.length}, minmax(0, 1fr))`}}>
-                {chartPoints.map(point=>point.sales>0?<button className="dashboard-bar-slot" key={point.date} type="button" title={`${point.label} · ${money(point.sales)}`} aria-label={`${point.label}: ${money(point.sales)}`} aria-pressed={selected?.date===point.date} onClick={()=>setSelectedPoint(point.date)}><span className="dashboard-bar" style={{height:`${point.sales/highest*100}%`}}/></button>:<span key={point.date} aria-hidden="true"/>)}
+              <div className="dashboard-columns" style={{gridTemplateColumns:`repeat(${chartPoints.length}, minmax(0, 1fr))`}}>
+                {chartPoints.map(point=><div className="dashboard-bar-slot" key={point.date} title={`${point.label} · ${money(point.sales)}`} aria-label={`${point.label}: ${money(point.sales)}`} role="img"><span className="dashboard-bar" style={{height:`${point.sales/highest*100}%`}}/></div>)}
               </div>
               <div className="dashboard-axis" aria-hidden="true">{axisLabels.map(day=><span key={day}>{shortDate(day)}</span>)}</div>
             </div>
@@ -136,10 +134,7 @@ export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:s
         <section className="dashboard-panel">
           <div className="dashboard-panel-heading"><div><h3>Sales breakdown</h3><p>Cash, cheques, and credit</p></div><span className="dashboard-icon"><ChartPie size={18}/></span></div>
           <div className="dashboard-mix">
-            <div className="cash-gauge" key={from+':'+to+':'+route} style={{'--cash-angle':`${cashShare*1.8}deg`} as CSSProperties}>
-              <div className="cash-gauge-arc" aria-hidden="true"/>
-              <div className="cash-gauge-reading"><strong>{result.sales?`${Math.round(cashShare)}%`:'—'}</strong><span>Cash share of sales</span></div>
-            </div>
+            <div className="dashboard-donut" style={split?{background:split}:undefined} aria-hidden="true"><span>Sales</span></div>
             <ul>{mix.map(item=><li key={item.label}><span style={{background:item.color}}/><span>{item.label}</span><strong>{money(item.value)}</strong></li>)}</ul>
           </div>
         </section>

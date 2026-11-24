@@ -26,6 +26,6 @@ it('renders today’s invoice activity when the ledger already has records', () 
   });
   const html = renderToString(<App />);
 
-  expect(html).toContain('Total sales');
+  expect(html).toContain('Sales overview');
   expect(html).toContain('LKM-24186');
 });

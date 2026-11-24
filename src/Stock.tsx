@@ -125,7 +125,7 @@ export function Stock({ mode, online, notify }: { mode: LedgerMode; online: bool
   return <>
     {!writable && <p className="notice amber">Reconnect to view current inventory and record stock changes.</p>}
     <div className="stock-summary">
-      <div className="dashboard-kpi stock-catalog-count"><span><span className="dashboard-icon"><Boxes size={17}/></span>Stock items</span><strong>{items ? all.length.toLocaleString() : '—'}</strong></div>
+      <div className="dashboard-kpi dashboard-kpi-sales"><span><span className="dashboard-icon"><Boxes size={17}/></span>Stock items</span><strong>{items ? all.length.toLocaleString() : '—'}</strong></div>
       <div className="dashboard-kpi"><span><span className="dashboard-icon"><Warehouse size={17}/></span>Warehouse units</span><strong>{items ? all.reduce((sum, item) => sum + item.quantity, 0).toLocaleString() : '—'}</strong></div>
       <div className="dashboard-kpi"><span><span className="dashboard-icon"><Truck size={17}/></span>Lorry units</span><strong>{items ? all.reduce((sum, item) => sum + (item.lorryQuantity ?? 0), 0).toLocaleString() : '—'}</strong></div>
     </div>
