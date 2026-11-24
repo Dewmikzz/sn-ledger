@@ -1,6 +1,6 @@
 import {useMemo,useState} from 'react';
 import {createPortal} from 'react-dom';
-import {Banknote,BarChart3,CalendarDays,ChartPie,ChevronDown,Printer,TrendingUp,Wallet} from 'lucide-react';
+import {Banknote,BarChart3,CalendarDays,ChartPie,Printer,TrendingUp,Wallet} from 'lucide-react';
 import {businessDate,deriveLedger,money,addDays,salesFigures} from './domain';
 import type {DailyReport,LedgerData,OperatorId} from './domain';
 
@@ -71,9 +71,19 @@ export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:s
   const valid=Boolean(from&&to&&from<=to);
   const result=useMemo(()=>summarizeSales(data,from,to,route,''),[data,from,to,route]);
   const dayCount=valid?Math.round((Date.parse(to)-Date.parse(from))/86400000)+1:0;
-  const recordedSales=new Map(result.days.map(([day,figures])=>[day,figures.sales]));
-  const chartDays=dayCount<=31?Array.from({length:dayCount},(_,index)=>addDays(from,index)):result.days.map(([day])=>day);
-  const highest=chartDays.reduce((max,day)=>Math.max(max,recordedSales.get(day)??0),1);
+  const groupSize=Math.max(1,Math.ceil(dayCount/31));
+  const amounts=Array.from({length:Math.ceil(dayCount/groupSize)},()=>0);
+  for(const [day,figures] of result.days){
+    const index=Math.floor((Date.parse(day)-Date.parse(from))/86400000/groupSize);
+    if(index>=0&&index<amounts.length)amounts[index]+=figures.sales;
+  }
+  const chartPoints=amounts.map((sales,index)=>{
+    const start=addDays(from,index*groupSize);
+    const end=addDays(from,Math.min((index+1)*groupSize,dayCount)-1);
+    return {date:start,label:start===end?shortDate(start):shortDate(start)+' – '+shortDate(end),sales};
+  });
+  const highest=chartPoints.reduce((max,point)=>Math.max(max,point.sales),1);
+  const axisLabels=valid?[from,...(dayCount>7?[addDays(from,Math.floor((dayCount-1)/2))]:[]),...(from===to?[]:[to])]:[];
   const mix=[
     {label:'Cash from sales',value:result.saleCash,color:'var(--dashboard-mint)'},
     {label:'Cheques from sales',value:result.salesCheques,color:'var(--dashboard-orange)'},
@@ -83,14 +93,10 @@ export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:s
   const chequeAngle=result.sales?(result.saleCash+result.salesCheques)/result.sales*100:0;
   const split=result.sales?`conic-gradient(var(--dashboard-mint) 0 ${cashAngle}%, var(--dashboard-orange) ${cashAngle}% ${chequeAngle}%, var(--dashboard-slate) ${chequeAngle}% 100%)`:undefined;
 
-  return <section className="sales-dashboard" aria-labelledby="sales-dashboard-title">
+  return <section className="sales-dashboard" aria-label="Sales dashboard">
     <div className="dashboard-heading">
-      <div>
-        <h2 id="sales-dashboard-title">Sales overview</h2>
-        <p>{period==='month'?month.label:valid?(from===to?shortDate(to):`${shortDate(from)} – ${shortDate(to)}`):'Select a date range'} · {route?`${route}, itemized sales`:'All routes'}</p>
-      </div>
       <div className="dashboard-periods" role="group" aria-label="Dashboard period">
-        {periods.map(option=><button key={option.value} type="button" aria-pressed={period===option.value} onClick={()=>setPeriod(option.value)}>{option.label}{option.value==='custom'&&<ChevronDown size={14}/>}</button>)}
+        {periods.map(option=><button key={option.value} type="button" aria-pressed={period===option.value} onClick={()=>setPeriod(option.value)}>{option.label}</button>)}
       </div>
     </div>
     {period==='custom'&&<div className="dashboard-dates">
@@ -100,29 +106,28 @@ export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:s
     {!valid?<p role="alert">Choose a valid date range.</p>:<>
       {warning&&<p className="dashboard-status"><span/>{warning}</p>}
       {result.reviewDays>0&&<p role="alert" className="notice amber">{result.reviewDays} daily sales {result.reviewDays===1?'total needs':'totals need'} review. Those days show recorded invoice figures.</p>}
-      <div className="dashboard-kpis">
-        <div className="dashboard-kpi dashboard-kpi-sales"><span><span className="dashboard-icon"><TrendingUp size={17}/></span>Total sales</span><strong>{money(result.sales)}</strong><small>{result.count} itemized {result.count===1?'invoice':'invoices'}</small></div>
-        <div className="dashboard-kpi"><span><span className="dashboard-icon"><Wallet size={17}/></span>Cash collected</span><strong>{money(result.cash)}</strong><small>{money(result.cash-result.saleCash)} from old balances</small></div>
-        <div className="dashboard-kpi"><span><span className="dashboard-icon"><Banknote size={17}/></span>New credit</span><strong>{money(result.newCredit)}</strong><small>Credit issued in this period</small></div>
-        <div className="dashboard-kpi"><span><span className="dashboard-icon"><ChartPie size={17}/></span>Est. gross profit</span><strong>{money(result.profit)}</strong><small>7% of sales · before expenses</small></div>
+      <div className="sales-summary">
+        <div className="sales-summary-header">
+          <div><h2>Sales overview</h2><p>{period==='month'?month.label:from===to?shortDate(to):`${shortDate(from)} – ${shortDate(to)}`} · {route?`${route}, itemized sales`:'All routes'}</p></div>
+          <TrendingUp size={23} aria-hidden="true"/>
+        </div>
+        <div className="sales-total"><span>Total sales</span><strong>{money(result.sales)}</strong><small>{result.count} itemized {result.count===1?'invoice':'invoices'}</small></div>
+        <div className="sales-metrics">
+          <div><span><ChartPie size={16}/>Est. gross profit</span><strong>{money(result.profit)}</strong><small>7% of sales</small></div>
+          <div><span><Wallet size={16}/>Cash collected</span><strong>{money(result.cash)}</strong><small>{money(result.cash-result.saleCash)} from old balances</small></div>
+          <div><span><Banknote size={16}/>New credit</span><strong>{money(result.newCredit)}</strong></div>
+        </div>
       </div>
       <div className="dashboard-charts">
         <section className="dashboard-panel">
-          <div className="dashboard-panel-heading"><div><h3>Sales trend</h3><p>Daily totals in LKR</p></div><span className="dashboard-icon"><BarChart3 size={18}/></span></div>
-          {result.sales>0?<div className="dashboard-trend" role="group" aria-label="Daily sales chart">
-            <div className="dashboard-scale" aria-hidden="true"><span>{money(highest)}</span><span>{money(Math.round(highest/2))}</span><span>0</span></div>
+          <div className="dashboard-panel-heading"><div><h3>Sales trend</h3><p>{groupSize>1?'Grouped sales totals in LKR':'Daily totals in LKR'}</p></div><span className="dashboard-icon"><BarChart3 size={18}/></span></div>
+          {result.sales>0?<div className="dashboard-trend" role="group" aria-label="Sales chart">
+            <div className="dashboard-scale" aria-hidden="true"><span>{money(highest)}</span><span>0</span></div>
             <div className="dashboard-plot">
-              <div className="dashboard-gridlines" aria-hidden="true"/>
-              <div className="dashboard-columns" style={{gridTemplateColumns:`repeat(${chartDays.length}, minmax(${chartDays.length>7?18:28}px, 1fr))`}}>
-                {chartDays.map((day,index)=>{
-                  const sale=recordedSales.get(day)??0;
-                  const showLabel=chartDays.length<=7||index%Math.ceil(chartDays.length/6)===0||index===chartDays.length-1;
-                  return <div className="dashboard-column" key={day}>
-                    <div className="dashboard-bar-slot" title={`${shortDate(day)} · ${money(sale)}`} aria-label={`${shortDate(day)}: ${money(sale)}`} role="img"><span className="dashboard-bar" style={{height:`${sale/highest*100}%`}}/></div>
-                    <span className="dashboard-tick" aria-hidden="true">{showLabel?shortDate(day):''}</span>
-                  </div>;
-                })}
+              <div className="dashboard-columns" style={{gridTemplateColumns:`repeat(${chartPoints.length}, minmax(0, 1fr))`}}>
+                {chartPoints.map(point=><div className="dashboard-bar-slot" key={point.date} title={`${point.label} · ${money(point.sales)}`} aria-label={`${point.label}: ${money(point.sales)}`} role="img"><span className="dashboard-bar" style={{height:`${point.sales/highest*100}%`}}/></div>)}
               </div>
+              <div className="dashboard-axis" aria-hidden="true">{axisLabels.map(day=><span key={day}>{shortDate(day)}</span>)}</div>
             </div>
           </div>:<p className="dashboard-empty"><CalendarDays size={21}/>No sales recorded for these dates.</p>}
         </section>

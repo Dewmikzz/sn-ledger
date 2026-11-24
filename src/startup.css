@@ -1,0 +1,36 @@
+body {margin:0}
+.app-startup,.ledger-loading {
+  display:grid;
+  justify-items:center;
+  align-content:center;
+  gap:12px;
+  text-align:center;
+  color:#5f5b71;
+  font:500 .875rem/1.4 Inter,system-ui,sans-serif;
+}
+.app-startup {
+  min-height:100dvh;
+  background:#f6f5fa;
+}
+.app-startup img {border-radius:11px}
+.app-startup strong {color:#211f31;font-size:1.075rem}
+.ledger-loading {min-height:180px}
+.loading-line {
+  display:block;
+  width:72px;
+  height:3px;
+  border-radius:6px;
+  background:#e5e0fb;
+  overflow:hidden;
+}
+.loading-line::after {
+  content:"";
+  display:block;
+  width:45%;
+  height:100%;
+  border-radius:inherit;
+  background:#6253c8;
+  animation:ledger-loading 1.2s ease-in-out infinite alternate;
+}
+@keyframes ledger-loading {to {transform:translateX(122%)}}
+@media(prefers-reduced-motion:reduce) {.loading-line::after {animation:none;margin:auto}}
