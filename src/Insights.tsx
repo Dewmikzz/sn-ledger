@@ -1,6 +1,6 @@
 import {useMemo,useState} from 'react';
 import {createPortal} from 'react-dom';
-import {Banknote,BarChart3,CalendarDays,ChartPie,Printer,TrendingUp,Wallet} from 'lucide-react';
+import {ArrowRight,Banknote,BarChart3,Boxes,CalendarDays,ChartPie,ChevronRight,CreditCard,FileText,Printer,Store,Wallet} from 'lucide-react';
 import {businessDate,deriveLedger,money,addDays,salesFigures} from './domain';
 import type {DailyReport,LedgerData,OperatorId} from './domain';
 
@@ -61,7 +61,7 @@ function shortDate(date: string) {
   return new Intl.DateTimeFormat('en-GB',{day:'numeric',month:'short',timeZone:'Asia/Colombo'}).format(new Date(date+'T12:00:00Z'));
 }
 
-export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:string;route:string;warning:string}){
+export function SalesDashboard({data,date,route,warning,onAdd,onNavigate}:{data:LedgerData;date:string;route:string;warning:string;onAdd:()=>void;onNavigate:(page:'shops'|'cheques'|'stock'|'reports')=>void}){
   const [period,setPeriod]=useState<Period>('month');
   const month=calendarMonth(date);
   const [customFrom,setCustomFrom]=useState(month.from);
@@ -106,20 +106,33 @@ export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:s
     {!valid?<p role="alert">Choose a valid date range.</p>:<>
       {warning&&<p className="dashboard-status"><span/>{warning}</p>}
       {result.reviewDays>0&&<p role="alert" className="notice amber">{result.reviewDays} daily sales {result.reviewDays===1?'total needs':'totals need'} review. Those days show recorded invoice figures.</p>}
-      <div className="sales-summary">
-        <div className="sales-summary-header">
-          <div><h2>Sales overview</h2><p>{period==='month'?month.label:from===to?shortDate(to):`${shortDate(from)} – ${shortDate(to)}`} · {route?`${route}, itemized sales`:'All routes'}</p></div>
-          <TrendingUp size={23} aria-hidden="true"/>
+      <div className="dashboard-board">
+        <section className="sales-summary">
+          <div className="sales-summary-header">
+            <p>{period==='month'?month.label:from===to?shortDate(to):`${shortDate(from)} – ${shortDate(to)}`}</p>
+            <h2>Sales overview</h2>
+          </div>
+          <div className="sales-total"><span>Total sales</span><strong>{money(result.sales)}</strong><small>{route?`${route} · itemized sales`:'All routes'}</small></div>
+          <button type="button" className="sales-entry" onClick={onAdd}>Record sales <ArrowRight size={15}/></button>
+          <span className="sales-art" aria-hidden="true"><img src="/icons/ledger-mark-192.png" alt="" width="72" height="72"/></span>
+        </section>
+        <div className="dashboard-center">
+          <nav className="dashboard-shortcuts" aria-label="Ledger shortcuts">
+            <button type="button" onClick={()=>onNavigate('shops')}><span><Store size={20}/></span>Shops</button>
+            <button type="button" onClick={()=>onNavigate('cheques')}><span><CreditCard size={20}/></span>Cheques</button>
+            <button type="button" onClick={()=>onNavigate('stock')}><span><Boxes size={20}/></span>Stock</button>
+            <button type="button" onClick={()=>onNavigate('reports')}><span><FileText size={20}/></span>Reports</button>
+          </nav>
+          <section className="dashboard-panel dashboard-finances">
+            <div className="dashboard-panel-heading"><div><h3>Sales summary</h3><p>{result.count} itemized {result.count===1?'invoice':'invoices'}</p></div><span className="dashboard-icon"><Wallet size={19}/></span></div>
+            <div className="sales-metrics">
+              <div><span><ChartPie size={16}/>Est. gross profit</span><strong>{money(result.profit)}</strong><small>7% of sales</small></div>
+              <div><span><Wallet size={16}/>Cash collected</span><strong>{money(result.cash)}</strong><small>{money(result.cash-result.saleCash)} from old balances</small></div>
+              <div><span><Banknote size={16}/>New credit</span><strong>{money(result.newCredit)}</strong></div>
+            </div>
+          </section>
         </div>
-        <div className="sales-total"><span>Total sales</span><strong>{money(result.sales)}</strong><small>{result.count} itemized {result.count===1?'invoice':'invoices'}</small></div>
-        <div className="sales-metrics">
-          <div><span><ChartPie size={16}/>Est. gross profit</span><strong>{money(result.profit)}</strong><small>7% of sales</small></div>
-          <div><span><Wallet size={16}/>Cash collected</span><strong>{money(result.cash)}</strong><small>{money(result.cash-result.saleCash)} from old balances</small></div>
-          <div><span><Banknote size={16}/>New credit</span><strong>{money(result.newCredit)}</strong></div>
-        </div>
-      </div>
-      <div className="dashboard-charts">
-        <section className="dashboard-panel">
+        <section className="dashboard-panel dashboard-trend-card">
           <div className="dashboard-panel-heading"><div><h3>Sales trend</h3><p>{groupSize>1?'Grouped sales totals in LKR':'Daily totals in LKR'}</p></div><span className="dashboard-icon"><BarChart3 size={18}/></span></div>
           {result.sales>0?<div className="dashboard-trend" role="group" aria-label="Sales chart">
             <div className="dashboard-scale" aria-hidden="true"><span>{money(highest)}</span><span>0</span></div>
@@ -131,13 +144,21 @@ export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:s
             </div>
           </div>:<p className="dashboard-empty"><CalendarDays size={21}/>No sales recorded for these dates.</p>}
         </section>
-        <section className="dashboard-panel">
+        <aside className="dashboard-side">
+        <section className="dashboard-panel dashboard-breakdown">
           <div className="dashboard-panel-heading"><div><h3>Sales breakdown</h3><p>Cash, cheques, and credit</p></div><span className="dashboard-icon"><ChartPie size={18}/></span></div>
           <div className="dashboard-mix">
             <div className="dashboard-donut" style={split?{background:split}:undefined} aria-hidden="true"><span>Sales</span></div>
             <ul>{mix.map(item=><li key={item.label}><span style={{background:item.color}}/><span>{item.label}</span><strong>{money(item.value)}</strong></li>)}</ul>
           </div>
         </section>
+        <section className="stock-feature">
+          <span className="stock-feature-icon"><Boxes size={25}/></span>
+          <h3>Warehouse &amp; Lorry</h3>
+          <p>Check both stock balances and record a load.</p>
+          <button type="button" onClick={()=>onNavigate('stock')}>Open inventory <ChevronRight size={16}/></button>
+        </section>
+        </aside>
       </div>
     </>}
   </section>;
