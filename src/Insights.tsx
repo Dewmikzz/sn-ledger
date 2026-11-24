@@ -46,18 +46,28 @@ export function summarizeSales(data:LedgerData,from:string,to:string,route:strin
   return {sales,cash,saleCash,salesCheques,newCredit,count,reviewDays,profit:estimateGrossProfit(sales),days};
 }
 
-const periods = [{days:1,label:'Day'},{days:7,label:'7 days'},{days:30,label:'30 days'},{days:0,label:'Custom'}] as const;
+const periods = [{value:'month',label:'Month'},{value:1,label:'Day'},{value:7,label:'7 days'},{value:30,label:'30 days'},{value:'custom',label:'Custom'}] as const;
+type Period = (typeof periods)[number]['value'];
+
+export function calendarMonth(date: string) {
+  const from = date.slice(0,7)+'-01';
+  const end = new Date(from+'T12:00:00Z');
+  const label = new Intl.DateTimeFormat('en-GB',{month:'long',year:'numeric',timeZone:'UTC'}).format(end);
+  end.setUTCMonth(end.getUTCMonth()+1,0);
+  return {from,to:end.toISOString().slice(0,10),label};
+}
 
 function shortDate(date: string) {
   return new Intl.DateTimeFormat('en-GB',{day:'numeric',month:'short',timeZone:'Asia/Colombo'}).format(new Date(date+'T12:00:00Z'));
 }
 
 export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:string;route:string;warning:string}){
-  const [period,setPeriod]=useState(7);
-  const [customFrom,setCustomFrom]=useState(()=>addDays(date,-6));
+  const [period,setPeriod]=useState<Period>('month');
+  const month=calendarMonth(date);
+  const [customFrom,setCustomFrom]=useState(month.from);
   const [customTo,setCustomTo]=useState(date);
-  const from=period?addDays(date,1-period):customFrom;
-  const to=period?date:customTo;
+  const from=period==='month'?month.from:period==='custom'?customFrom:addDays(date,1-period);
+  const to=period==='month'?month.to:period==='custom'?customTo:date;
   const valid=Boolean(from&&to&&from<=to);
   const result=useMemo(()=>summarizeSales(data,from,to,route,''),[data,from,to,route]);
   const dayCount=valid?Math.round((Date.parse(to)-Date.parse(from))/86400000)+1:0;
@@ -77,13 +87,13 @@ export function SalesDashboard({data,date,route,warning}:{data:LedgerData;date:s
     <div className="dashboard-heading">
       <div>
         <h2 id="sales-dashboard-title">Sales overview</h2>
-        <p>{valid?(from===to?shortDate(to):`${shortDate(from)} – ${shortDate(to)}`):'Select a date range'} · {route?`${route}, itemized sales`:'All routes'}</p>
+        <p>{period==='month'?month.label:valid?(from===to?shortDate(to):`${shortDate(from)} – ${shortDate(to)}`):'Select a date range'} · {route?`${route}, itemized sales`:'All routes'}</p>
       </div>
       <div className="dashboard-periods" role="group" aria-label="Dashboard period">
-        {periods.map(option=><button key={option.days} type="button" aria-pressed={period===option.days} onClick={()=>setPeriod(option.days)}>{option.label}{option.days===0&&<ChevronDown size={14}/>}</button>)}
+        {periods.map(option=><button key={option.value} type="button" aria-pressed={period===option.value} onClick={()=>setPeriod(option.value)}>{option.label}{option.value==='custom'&&<ChevronDown size={14}/>}</button>)}
       </div>
     </div>
-    {period===0&&<div className="dashboard-dates">
+    {period==='custom'&&<div className="dashboard-dates">
       <label className="field">From<input type="date" value={customFrom} onChange={event=>setCustomFrom(event.target.value)}/></label>
       <label className="field">Through<input type="date" value={customTo} onChange={event=>setCustomTo(event.target.value)}/></label>
     </div>}

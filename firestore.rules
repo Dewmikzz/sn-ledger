@@ -16,6 +16,9 @@ service cloud.firestore {
     // sync/head: {sequence:int,lastEventId:string}, changed atomically with one
     //   newly created event. This serializes append operations across devices.
     // shops/{id}: validated shop profile with authUid and updatedAt audit fields.
+    // stockItems/{id}: item details, per-unit prices and current unit balance.
+    // stockItems/{id}/movements/{id}: immutable quantity or count and packaging
+    //   conversion, committed together with the change in the item's balance.
     // closes/{id}: immutable first-close snapshot with authenticated device UID.
     // No derived financial balances are client-writable documents. The ledger
     // replays immutable sequenced events and independently rejects overpayments.
@@ -243,6 +246,65 @@ service cloud.firestore {
         && (!('longitude' in data) || (data.longitude is number && data.longitude >= -180 && data.longitude <= 180))
         && (('latitude' in data) == ('longitude' in data));
     }
+
+    function stockQuantity(value) {
+      return value is int && value >= 0 && value <= 99999999;
+    }
+    function packageSize(value) {
+      return value is int && value >= 0 && value <= 10000;
+    }
+    function validStockItem(data, itemId) {
+      return data.keys().hasOnly(['id','name','sku','unitsPerPack','unitsPerBox','costPrice','sellingPrice',
+          'quantity','revision','lastMovementId','authUid','updatedAt'])
+        && data.id == itemId && id(data.id) && text(data.name, 1, 120) && text(data.sku, 0, 60)
+        && packageSize(data.unitsPerPack) && packageSize(data.unitsPerBox)
+        && money(data.costPrice) && money(data.sellingPrice)
+        && stockQuantity(data.quantity) && stockQuantity(data.revision)
+        && (data.lastMovementId == '' || id(data.lastMovementId))
+        && data.authUid == request.auth.uid && data.updatedAt == request.time;
+    }
+    function stockItemPath(agency, itemId) {
+      return /databases/$(database)/documents/agencies/$(agency)/stockItems/$(itemId);
+    }
+    function stockMovementPath(agency, itemId, movementId) {
+      return /databases/$(database)/documents/agencies/$(agency)/stockItems/$(itemId)/movements/$(movementId);
+    }
+    function stockDetailsChanged(before, after) {
+      return after.diff(before).affectedKeys().hasOnly(['name','sku','unitsPerPack','unitsPerBox',
+          'costPrice','sellingPrice','revision','authUid','updatedAt'])
+        && after.revision == before.revision + 1;
+    }
+    function stockBalanceChanged(agency, itemId, before, after) {
+      let path = stockMovementPath(agency, itemId, after.lastMovementId);
+      let movement = getAfter(path).data;
+      return after.diff(before).affectedKeys().hasOnly(['quantity','lastMovementId','authUid','updatedAt'])
+        && id(after.lastMovementId) && after.lastMovementId != before.lastMovementId && !exists(path)
+        && movement.before == before.quantity && movement.after == after.quantity
+        && movement.id == after.lastMovementId && movement.authUid == request.auth.uid;
+    }
+    function validStockMovement(data, movementId, item) {
+      return data.keys().hasOnly(['id','kind','loose','packs','boxes','unitsPerPack','unitsPerBox','units',
+          'before','after','note','authUid','createdAt'])
+        && data.id == movementId && id(data.id)
+        && text(data.note, 0, 300) && data.authUid == request.auth.uid && data.createdAt == request.time
+        && stockQuantity(data.loose) && stockQuantity(data.packs) && stockQuantity(data.boxes)
+        && packageSize(data.unitsPerPack) && packageSize(data.unitsPerBox)
+        && data.unitsPerPack == item.unitsPerPack && data.unitsPerBox == item.unitsPerBox
+        && (data.packs == 0 || data.unitsPerPack > 0) && (data.boxes == 0 || data.unitsPerBox > 0)
+        && stockQuantity(data.units) && stockQuantity(data.before) && stockQuantity(data.after)
+        && data.units == data.loose + data.packs * data.unitsPerPack + data.boxes * data.unitsPerBox
+        && data.before == item.quantity
+        && ((data.kind == 'count' && data.after == data.units)
+          || (data.units > 0 && ((data.kind == 'in' && data.after == data.before + data.units)
+            || (data.kind == 'out' && data.after == data.before - data.units))));
+    }
+    function stockMovementMatchesItem(agency, itemId, movementId, data) {
+      let before = get(stockItemPath(agency, itemId)).data;
+      let after = getAfter(stockItemPath(agency, itemId)).data;
+      return validStockMovement(data, movementId, before)
+        && after.lastMovementId == movementId && before.lastMovementId != movementId
+        && after.quantity == data.after;
+    }
     function validFigures(data) {
       return data is map
         && data.keys().hasAll(['invoiceValue','newCredit','cashFromInvoices','cashFromCollections',
@@ -319,6 +381,22 @@ service cloud.firestore {
           && request.resource.data.id == resource.data.id
           && (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
         allow delete: if false;
+      }
+      match /stockItems/{itemId} {
+        allow read: if enrolled(agency);
+        allow create: if enrolled(agency) && validStockItem(request.resource.data, itemId)
+          && request.resource.data.quantity == 0 && request.resource.data.revision == 0
+          && request.resource.data.lastMovementId == '';
+        allow update: if enrolled(agency) && validStockItem(request.resource.data, itemId)
+          && (stockDetailsChanged(resource.data, request.resource.data)
+            || stockBalanceChanged(agency, itemId, resource.data, request.resource.data));
+        allow delete: if false;
+        match /movements/{movementId} {
+          allow read: if enrolled(agency);
+          allow create: if enrolled(agency)
+            && stockMovementMatchesItem(agency, itemId, movementId, request.resource.data);
+          allow update, delete: if false;
+        }
       }
       match /closes/{closeId} {
         allow read: if enrolled(agency);

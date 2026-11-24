@@ -1,11 +1,20 @@
 import {expect,it} from 'vitest';
-import {estimateGrossProfit,summarizeSales} from '../src/Insights';
+import {calendarMonth,estimateGrossProfit,summarizeSales} from '../src/Insights';
 import {createDemoData,buildReport,createDayClose,validateAndAppend,type LedgerData,type InvoiceEvent,type CollectionEvent,type CorrectionEvent,type DailySalesEvent} from '../src/domain';
 
 it('estimates 7% of sales in integer cents, rounding once',()=>{
   expect(estimateGrossProfit(2_500_000)).toBe(175_000);
   expect(estimateGrossProfit(7)).toBe(0);
   expect(estimateGrossProfit(8)).toBe(1);
+});
+
+it('uses the full selected calendar month for monthly sales and profit',()=>{
+  expect(calendarMonth('2026-11-18')).toEqual({from:'2026-11-01',to:'2026-11-30',label:'November 2026'});
+  expect(calendarMonth('2028-02-16').to).toBe('2028-02-29');
+  expect(calendarMonth('2026-12-24').to).toBe('2026-12-31');
+  const data=createDemoData('2026-11-24');
+  const {from,to}=calendarMonth('2026-11-24');
+  expect(summarizeSales(data,from,to,'','')).toMatchObject({sales:14_950_000,profit:1_046_500});
 });
 
 it('uses the daily total once, adds older cash collections, and retains route-only figures',()=>{
